@@ -47,8 +47,8 @@ dev = [
 sgl-bench = "sgl_bench.cli:main"
 
 [project.urls]
-Homepage = "https://github.com/sgl-project/sgl-bench"
-Repository = "https://github.com/sgl-project/sgl-bench"
+Homepage = "https://github.com/zijiexia/sgl-bench"
+Repository = "https://github.com/zijiexia/sgl-bench"
 
 [tool.setuptools.packages.find]
 include = ["sgl_bench*"]

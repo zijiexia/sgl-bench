@@ -5,10 +5,10 @@ Lightweight, **client-side** performance benchmark for any OpenAI-compatible /
 
 ```bash
 # Not on PyPI yet — install from source (no torch, no CUDA, no sglang):
-git clone https://github.com/sgl-project/sgl-bench && cd sgl-bench
+git clone https://github.com/zijiexia/sgl-bench && cd sgl-bench
 pip install -e .                 # add [multimodal] / [longbench] for those datasets
 # Once published, this will also work:
-#   pip install git+https://github.com/sgl-project/sgl-bench
+#   pip install git+https://github.com/zijiexia/sgl-bench
 
 sgl-bench serve --backend sglang --base-url http://localhost:30000 \
     --dataset-name random --num-prompts 100
