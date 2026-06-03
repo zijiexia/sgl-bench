@@ -57,6 +57,27 @@ installs standalone. The slice is pinned at a SHA in
 `python scripts/sync_vendored.py`. Your own datasets live in `sgl_bench/datasets/`
 and register without touching vendored code.
 
+## Add your own dataset
+
+Drop a module in `sgl_bench/datasets/`, decorate a `BaseDataset` subclass, and
+it's available to every subcommand — no reinstall, no edits to vendored code.
+See `sgl_bench/datasets/jsonl_prompts.py` for the full template:
+
+```python
+from sgl_bench.registry import register_dataset
+from sgl_bench._vendored.sglang.benchmark.datasets.common import BaseDataset, DatasetRow
+
+@register_dataset("my-dataset", add_cli_args=lambda p: p.add_argument("--my-path"))
+class MyDataset(BaseDataset):
+    @classmethod
+    def from_args(cls, args): ...
+    def load(self, tokenizer, model_id=None) -> list[DatasetRow]: ...
+```
+
+```bash
+sgl-bench serve --base-url ... --dataset-name jsonl-prompts --jsonl-prompts-path prompts.jsonl
+```
+
 ## License
 
 Apache-2.0. Vendored sglang sources (themselves adapted from vLLM) are also
