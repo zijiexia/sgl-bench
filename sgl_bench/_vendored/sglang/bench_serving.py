@@ -44,7 +44,8 @@ import requests
 from tqdm.asyncio import tqdm
 from transformers import AutoTokenizer, PreTrainedTokenizerBase
 
-from sgl_bench._vendored.sglang.benchmark.datasets import DatasetRow, get_dataset
+from sgl_bench._vendored.sglang.benchmark.datasets.common import DatasetRow
+from sgl_bench.registry import get_dataset
 from sgl_bench._vendored.sglang.benchmark.datasets.mooncake import get_mooncake_request_over_time
 from sgl_bench._vendored.sglang.benchmark.utils import (
     get_tokenizer,
@@ -2487,6 +2488,8 @@ if __name__ == "__main__":
         default=None,
         help="Custom HTTP headers in Key=Value format. Example: --header MyHeader=MY_VALUE MyAnotherHeader=myanothervalue",
     )
+    from sgl_bench.registry import add_user_dataset_args
+    add_user_dataset_args(parser)
     args = parser.parse_args()
     _validate_parsed_gsp_args(parser, args)
     run_benchmark(args)

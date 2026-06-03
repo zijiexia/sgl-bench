@@ -52,13 +52,17 @@ def _print_usage(cmds) -> None:
 
 
 def _list_datasets() -> int:
-    # Lazy import so a bare `import sgl_bench` never pulls the vendored
-    # dataset modules (and their deps) until this command is actually run.
-    from sgl_bench._vendored.sglang.benchmark.datasets import DATASET_MAPPING
+    # Lazy import so a bare `import sgl_bench` never pulls the registry /
+    # vendored dataset modules (and their deps) until this command is run.
+    from sgl_bench.registry import all_specs
 
+    specs = all_specs()
+    width = max((len(n) for n in specs), default=0)
     print("available datasets (--dataset-name):")
-    for name in sorted(DATASET_MAPPING):
-        print(f"  {name}")
+    for name in sorted(specs):
+        spec = specs[name]
+        extra = f"  [needs {spec.needs_extra}]" if spec.needs_extra else ""
+        print(f"  {name:<{width}}  ({spec.source}){extra}")
     return 0
 
 

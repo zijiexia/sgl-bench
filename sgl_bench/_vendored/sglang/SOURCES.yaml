@@ -48,6 +48,15 @@ files:
       # FAKE_BOOTSTRAP_HOST: inline the constant (srt/disaggregation/utils.py).
       - old: "from sglang.srt.disaggregation.utils import FAKE_BOOTSTRAP_HOST"
         new: 'FAKE_BOOTSTRAP_HOST = "2.2.2.2"'
+      # Re-point dataset dispatch to the SE-owned overlay registry (user
+      # datasets overlay the vendored base). DatasetRow stays from common.
+      # Self-checking: if upstream changes this line, the rewrite no-ops and
+      # the audit fails on the surviving `from sglang.benchmark` import.
+      - old: "from sglang.benchmark.datasets import DatasetRow, get_dataset"
+        new: "from sgl_bench._vendored.sglang.benchmark.datasets.common import DatasetRow\nfrom sgl_bench.registry import get_dataset"
+      # Let user-registered datasets add their own CLI flags right before parse.
+      - old: "    args = parser.parse_args()\n    _validate_parsed_gsp_args(parser, args)\n    run_benchmark(args)"
+        new: "    from sgl_bench.registry import add_user_dataset_args\n    add_user_dataset_args(parser)\n    args = parser.parse_args()\n    _validate_parsed_gsp_args(parser, args)\n    run_benchmark(args)"
 
   # --- benchmark package + tokenizer/dataset utilities ---
   - src: python/sglang/benchmark/__init__.py
