@@ -88,6 +88,27 @@ def test_add_user_dataset_args_injects_flags():
     assert ns.fake_path == "/tmp/x"
 
 
+def test_extra_gated_datasets_advertised_without_import():
+    # image/mmmu/longbench_v2 show up in the listing with their extra, and
+    # listing them must NOT import PIL/pandas (cls stays None).
+    import sys
+
+    specs = registry.all_specs()
+    for name, extra in (("image", "multimodal"), ("mmmu", "multimodal"), ("longbench_v2", "longbench")):
+        assert specs[name].needs_extra == extra
+        assert specs[name].source == "vendored"
+    assert "PIL" not in sys.modules and "pandas" not in sys.modules
+
+
+def test_resolve_extra_without_dep_gives_friendly_error():
+    # The dev venv has no [multimodal]/[longbench] deps, so resolving these
+    # must raise a clear "pip install sgl-bench[...]" message, not ImportError.
+    with pytest.raises(SystemExit, match="multimodal"):
+        registry.resolve("image")
+    with pytest.raises(SystemExit, match="longbench"):
+        registry.resolve("longbench_v2")
+
+
 def test_get_dataset_shim_drives_user_dataset():
     def _args(p):
         p.add_argument("--fake-path", default=None)

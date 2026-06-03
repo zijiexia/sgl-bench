@@ -32,6 +32,21 @@ class DatasetSpec:
 _USER: Dict[str, DatasetSpec] = {}
 _autoloaded = False
 
+# Vendored datasets gated behind an optional dependency group. They are NOT in
+# the vendored DATASET_MAPPING (datasets/__init__.py never imports them), so a
+# bare install stays free of PIL/pandas/HF-datasets; the registry lazy-imports
+# the module only when the dataset is actually resolved.
+#   name -> (extra, module, class)
+_VENDORED_EXTRAS: Dict[str, tuple] = {
+    "image": ("multimodal", "sgl_bench._vendored.sglang.benchmark.datasets.image", "ImageDataset"),
+    "mmmu": ("multimodal", "sgl_bench._vendored.sglang.benchmark.datasets.mmmu", "MMMUDataset"),
+    "longbench_v2": (
+        "longbench",
+        "sgl_bench._vendored.sglang.benchmark.datasets.longbench_v2",
+        "LongBenchV2Dataset",
+    ),
+}
+
 
 def register_dataset(
     name: str,
@@ -91,7 +106,23 @@ def resolve(name: str) -> DatasetSpec:
         key = "random-ids"
     if key in vmap:
         return DatasetSpec(name=key, cls=vmap[key], source="vendored")
-    available = ", ".join(sorted(set(vmap) | set(_USER)))
+    if name in _VENDORED_EXTRAS:
+        extra, module, clsname = _VENDORED_EXTRAS[name]
+        # Probe the representative dep first -- catches modules (e.g.
+        # longbench_v2) that import their heavy deps lazily inside load().
+        _require_extra(extra, name)
+        try:
+            mod = importlib.import_module(module)
+        except ImportError as e:
+            missing = getattr(e, "name", extra)
+            raise SystemExit(
+                f"dataset {name!r} needs the optional '{extra}' dependencies "
+                f"(missing: {missing}).\n  pip install 'sgl-bench[{extra}]'"
+            )
+        return DatasetSpec(
+            name=name, cls=getattr(mod, clsname), needs_extra=extra, source="vendored"
+        )
+    available = ", ".join(sorted(set(vmap) | set(_VENDORED_EXTRAS) | set(_USER)))
     raise ValueError(f"Unknown dataset: {name!r}. Available: {available}")
 
 
@@ -101,6 +132,9 @@ def all_specs() -> Dict[str, DatasetSpec]:
     out: Dict[str, DatasetSpec] = {
         n: DatasetSpec(n, c, source="vendored") for n, c in _vendored_map().items()
     }
+    # Advertise extra-gated datasets without importing them (cls left None).
+    for name, (extra, _module, _clsname) in _VENDORED_EXTRAS.items():
+        out[name] = DatasetSpec(name=name, cls=None, needs_extra=extra, source="vendored")
     out.update(_USER)  # user overlays vendored on name clash
     return out
 

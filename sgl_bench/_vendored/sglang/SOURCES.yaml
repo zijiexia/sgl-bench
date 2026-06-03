@@ -137,3 +137,12 @@ files:
     dst: benchmark/datasets/sharegpt.py
   - src: python/sglang/benchmark/datasets/speed_bench.py
     dst: benchmark/datasets/speed_bench.py
+
+  # --- heavy datasets (gated behind extras; lazy-loaded by the registry, NOT
+  # imported by datasets/__init__.py, so a bare install stays light) ---
+  - src: python/sglang/benchmark/datasets/image.py          # [multimodal] PIL + pybase64
+    dst: benchmark/datasets/image.py
+  - src: python/sglang/benchmark/datasets/mmmu.py           # [multimodal] PIL + pybase64 + datasets
+    dst: benchmark/datasets/mmmu.py
+  - src: python/sglang/benchmark/datasets/longbench_v2.py   # [longbench] pandas + datasets
+    dst: benchmark/datasets/longbench_v2.py
