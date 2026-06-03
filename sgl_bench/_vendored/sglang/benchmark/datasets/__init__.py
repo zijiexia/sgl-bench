@@ -1,4 +1,4 @@
-# Vendored from sgl-project/sglang@e5b8e3a66aa6052d86905869a7dd7c816c8401f7
+# Vendored from sgl-project/sglang@5a15cde858ea09b77116212a39356f2fc51b8584
 # Source: python/sglang/benchmark/datasets/__init__.py
 # DO NOT EDIT directly. To upgrade, edit SOURCES.yaml and rerun
 # `python scripts/sync_vendored.py`.
@@ -15,7 +15,6 @@ from sgl_bench._vendored.sglang.benchmark.datasets.mooncake import MooncakeDatas
 from sgl_bench._vendored.sglang.benchmark.datasets.openai_dataset import OpenAIDataset
 from sgl_bench._vendored.sglang.benchmark.datasets.random import RandomDataset
 from sgl_bench._vendored.sglang.benchmark.datasets.sharegpt import ShareGPTDataset
-from sgl_bench._vendored.sglang.benchmark.datasets.speed_bench import SpeedBenchDataset
 
 DATASET_MAPPING: Dict[str, Type[BaseDataset]] = {
     "autobench": AutoBenchmarkDataset,
@@ -28,7 +27,6 @@ DATASET_MAPPING: Dict[str, Type[BaseDataset]] = {
     "random-ids": RandomDataset,
     "generated-shared-prefix": GeneratedSharedPrefixDataset,
     "mooncake": MooncakeDataset,
-    "speed-bench": SpeedBenchDataset,
 }
 
 

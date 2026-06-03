@@ -1,4 +1,4 @@
-# Vendored from sgl-project/sglang@e5b8e3a66aa6052d86905869a7dd7c816c8401f7
+# Vendored from sgl-project/sglang@5a15cde858ea09b77116212a39356f2fc51b8584
 # Source: python/sglang/benchmark/datasets/image.py
 # DO NOT EDIT directly. To upgrade, edit SOURCES.yaml and rerun
 # `python scripts/sync_vendored.py`.
@@ -297,20 +297,6 @@ def sample_image_requests(
         )
     else:
         print(f"#Images per request: {image_count} (fixed)")
-
-    # Detailed token breakdown (derived from dataset + input_lens)
-    text_prompt_lens = np.array([r.text_prompt_len for r in dataset])
-    vision_prompt_lens = np.array([r.vision_prompt_len for r in dataset])
-    text_prompt_overheads = text_prompt_lens - input_lens
-    stat_fields = [
-        ("Raw text prompt tokens (without overhead)", input_lens),
-        ("Text prompt tokens (with chat template)", text_prompt_lens),
-        ("Text prompt overhead", text_prompt_overheads),
-        ("Vision tokens", vision_prompt_lens),
-    ]
-    print("\n=== Token Breakdown (per request avg / total) ===")
-    for label, vals in stat_fields:
-        print(f"  {label}: avg={np.mean(vals):.1f}, total={np.sum(vals)}")
 
     print(
         f"\nCreated {len(dataset)} {image_content} {image_format} images with average {total_image_bytes // num_requests} bytes per request"

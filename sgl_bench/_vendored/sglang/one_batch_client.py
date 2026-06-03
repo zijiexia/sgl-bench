@@ -1,4 +1,4 @@
-# Vendored from sgl-project/sglang@e5b8e3a66aa6052d86905869a7dd7c816c8401f7
+# Vendored from sgl-project/sglang@5a15cde858ea09b77116212a39356f2fc51b8584
 # Source: python/sglang/test/bench_one_batch_server_internal.py
 # DO NOT EDIT directly. To upgrade, edit SOURCES.yaml and rerun
 # `python scripts/sync_vendored.py`.
@@ -194,7 +194,7 @@ class BenchArgs:
             "--dataset-name",
             type=str,
             default=BenchArgs.dataset_name,
-            choices=["mmmu", "random", "random-ids", "generated-shared-prefix"],
+            choices=["mmmu", "random", "generated-shared-prefix"],
             help="Name of the dataset to benchmark on.",
         )
         parser.add_argument(
@@ -488,7 +488,7 @@ def run_one_case(
         _flush_cache_with_retry(url, "/flush_cache")
 
     # Load input token ids via bench_serving.get_dataset
-    supported_datasets = ("random", "random-ids", "mmmu", "generated-shared-prefix")
+    supported_datasets = ("random", "mmmu", "generated-shared-prefix")
     if dataset_name not in supported_datasets:
         raise ValueError(
             f"Unsupported dataset for batch benchmark: {dataset_name}. "

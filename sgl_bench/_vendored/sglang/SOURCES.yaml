@@ -3,12 +3,13 @@
 # `python scripts/sync_vendored.py` to refresh. Banner comments at the top
 # of each generated file point back here.
 #
-# Pinned to the SHA analyzed during extraction. Bump `synced_from_sha`
-# (prefer a release tag's commit) + rerun sync to track upstream.
+# Pinned to the v0.5.12.post1 release commit (matches the sglang version
+# commonly deployed). Bump `synced_from_sha` + rerun sync to track upstream;
+# if a rewrite `old` no longer matches, upstream moved a seam -- fix it.
 
 upstream_repo: sgl-project/sglang
 upstream_branch: main
-synced_from_sha: e5b8e3a66aa6052d86905869a7dd7c816c8401f7
+synced_from_sha: 5a15cde858ea09b77116212a39356f2fc51b8584   # tag v0.5.12.post1
 synced_at: "2026-06-03"
 
 # Audited by tests/test_vendor_audit.py: any surviving `from sglang...` /
@@ -55,8 +56,9 @@ files:
       - old: "from sglang.benchmark.datasets import DatasetRow, get_dataset"
         new: "from sgl_bench._vendored.sglang.benchmark.datasets.common import DatasetRow\nfrom sgl_bench.registry import get_dataset"
       # Let user-registered datasets add their own CLI flags right before parse.
-      - old: "    args = parser.parse_args()\n    _validate_parsed_gsp_args(parser, args)\n    run_benchmark(args)"
-        new: "    from sgl_bench.registry import add_user_dataset_args\n    add_user_dataset_args(parser)\n    args = parser.parse_args()\n    _validate_parsed_gsp_args(parser, args)\n    run_benchmark(args)"
+      # (v0.5.12.post1 has no _validate_parsed_gsp_args between parse and run.)
+      - old: "    args = parser.parse_args()\n    run_benchmark(args)"
+        new: "    from sgl_bench.registry import add_user_dataset_args\n    add_user_dataset_args(parser)\n    args = parser.parse_args()\n    run_benchmark(args)"
 
   # --- single-batch latency client core (client-mode "one-batch") ---
   # We keep only the client primitives (run_one_case + helpers) and drop the
@@ -144,8 +146,7 @@ files:
     dst: benchmark/datasets/random.py
   - src: python/sglang/benchmark/datasets/sharegpt.py
     dst: benchmark/datasets/sharegpt.py
-  - src: python/sglang/benchmark/datasets/speed_bench.py
-    dst: benchmark/datasets/speed_bench.py
+  # NOTE: speed_bench.py does not exist at v0.5.12.post1 (added upstream later).
 
   # --- heavy datasets (gated behind extras; lazy-loaded by the registry, NOT
   # imported by datasets/__init__.py, so a bare install stays light) ---
