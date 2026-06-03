@@ -14,6 +14,10 @@ sgl-bench serve --backend sglang --base-url http://localhost:30000 \
     --dataset-name random --num-prompts 100
 ```
 
+📖 **Full guide: [docs/USAGE.md](docs/USAGE.md)** — every subcommand and flag,
+datasets, recipes (8k/1k, 32k/1k, cache-hit, latency sweeps), how to get
+trustworthy numbers, and metric interpretation.
+
 ## What this is (and isn't)
 
 sgl-bench is a **pure HTTP client**. It never loads a model engine, so it
@@ -82,6 +86,10 @@ class MyDataset(BaseDataset):
 ```bash
 sgl-bench serve --base-url ... --dataset-name jsonl-prompts --jsonl-prompts-path prompts.jsonl
 ```
+
+Full walkthrough (contract, `add_cli_args`, tests, vendoring a sglang dataset):
+the **`/add-dataset` skill** (`.claude/skills/add-dataset/`) and
+[docs/USAGE.md](docs/USAGE.md#datasets).
 
 ## License
 
