@@ -97,6 +97,15 @@ files:
         new: "        raise ValueError(\n            \"sgl-bench (client mode) needs a HF model id/dir, not a .json/.model file\"\n        )"
       - old: "        from sglang.srt.utils.hf_transformers_utils import get_processor\n\n        return get_processor(pretrained_model_name_or_path)"
         new: "        raise ValueError(\n            \"sgl-bench (client mode) needs a HF model id/dir, not a .json/.model file\"\n        )"
+      # Robust load: custom archs (e.g. deepseek_v4) aren't known to vanilla
+      # transformers and fail config parsing; sglang registers them on import.
+      # Try vanilla first, then fall back to importing sglang IFF it's already
+      # installed -- an optional runtime aid, never a hard dependency. Uses
+      # importlib (not `import sglang`) so the audit stays clean.
+      - old: "    return AutoTokenizer.from_pretrained(\n        pretrained_model_name_or_path, trust_remote_code=True\n    )"
+        new: "    try:\n        return AutoTokenizer.from_pretrained(\n            pretrained_model_name_or_path, trust_remote_code=True\n        )\n    except Exception:\n        import importlib.util\n\n        if importlib.util.find_spec(\"sglang\") is None:\n            raise\n        importlib.import_module(\"sglang\")  # registers custom model configs\n        return AutoTokenizer.from_pretrained(\n            pretrained_model_name_or_path, trust_remote_code=True\n        )"
+      - old: "    return AutoProcessor.from_pretrained(\n        pretrained_model_name_or_path, trust_remote_code=True\n    )"
+        new: "    try:\n        return AutoProcessor.from_pretrained(\n            pretrained_model_name_or_path, trust_remote_code=True\n        )\n    except Exception:\n        import importlib.util\n\n        if importlib.util.find_spec(\"sglang\") is None:\n            raise\n        importlib.import_module(\"sglang\")  # registers custom model configs\n        return AutoProcessor.from_pretrained(\n            pretrained_model_name_or_path, trust_remote_code=True\n        )"
 
   # --- dataset registry + contract ---
   - src: python/sglang/benchmark/datasets/__init__.py

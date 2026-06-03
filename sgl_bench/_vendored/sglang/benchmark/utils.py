@@ -64,9 +64,19 @@ def get_tokenizer(
         pretrained_model_name_or_path
     ):
         pretrained_model_name_or_path = get_model(pretrained_model_name_or_path)
-    return AutoTokenizer.from_pretrained(
-        pretrained_model_name_or_path, trust_remote_code=True
-    )
+    try:
+        return AutoTokenizer.from_pretrained(
+            pretrained_model_name_or_path, trust_remote_code=True
+        )
+    except Exception:
+        import importlib.util
+
+        if importlib.util.find_spec("sglang") is None:
+            raise
+        importlib.import_module("sglang")  # registers custom model configs
+        return AutoTokenizer.from_pretrained(
+            pretrained_model_name_or_path, trust_remote_code=True
+        )
 
 
 def get_processor(
@@ -87,9 +97,19 @@ def get_processor(
         pretrained_model_name_or_path
     ):
         pretrained_model_name_or_path = get_model(pretrained_model_name_or_path)
-    return AutoProcessor.from_pretrained(
-        pretrained_model_name_or_path, trust_remote_code=True
-    )
+    try:
+        return AutoProcessor.from_pretrained(
+            pretrained_model_name_or_path, trust_remote_code=True
+        )
+    except Exception:
+        import importlib.util
+
+        if importlib.util.find_spec("sglang") is None:
+            raise
+        importlib.import_module("sglang")  # registers custom model configs
+        return AutoProcessor.from_pretrained(
+            pretrained_model_name_or_path, trust_remote_code=True
+        )
 
 
 def download_and_cache_hf_file(
