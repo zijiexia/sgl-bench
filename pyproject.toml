@@ -1,0 +1,79 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "sgl-bench"
+version = "0.0.1"
+description = "Lightweight client-side performance benchmark for OpenAI-compatible / sglang HTTP endpoints (no torch, no sglang install)."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "Apache-2.0" }
+authors = [{ name = "SGLang Team" }]
+keywords = ["llm", "benchmark", "serving", "latency", "throughput", "sglang", "openai-compatible"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: Apache Software License",
+    "Programming Language :: Python :: 3",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+# Base deps are intentionally light: the vendored client imports only these.
+# No torch, no sglang. Heavy datasets live behind the extras below.
+dependencies = [
+    "aiohttp>=3.9,<4",
+    "requests>=2.28,<3",
+    "numpy>=1.24,<3",
+    "transformers>=4.40",
+    "tqdm>=4.65,<5",
+    "tabulate>=0.9,<1",
+    "pydantic>=2,<3",
+]
+
+[project.optional-dependencies]
+# Heavy datasets, gated so a bare install stays torch/PIL/pandas-free.
+multimodal = ["pillow>=10", "pybase64>=1.3", "datasets>=2.14,<5"]   # image, mmmu
+longbench = ["pandas>=2.0,<3", "datasets>=2.14,<5"]                 # longbench_v2
+all = ["sgl-bench[multimodal,longbench]"]
+dev = [
+    "pytest>=7.0,<9",
+    "pytest-asyncio>=0.23,<2",
+    "pyyaml>=6.0,<7",   # scripts/sync_vendored.py + audit read SOURCES.yaml
+    "ruff>=0.5,<1",
+    "black>=24.0,<26",
+]
+
+[project.scripts]
+sgl-bench = "sgl_bench.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/sgl-project/sgl-bench"
+Repository = "https://github.com/sgl-project/sgl-bench"
+
+[tool.setuptools.packages.find]
+include = ["sgl_bench*"]
+exclude = ["tests*", "scripts*"]
+
+[tool.setuptools.package-data]
+"sgl_bench._vendored.sglang" = ["SOURCES.yaml"]
+
+[tool.ruff]
+target-version = "py310"
+line-length = 100
+
+[tool.ruff.lint]
+extend-select = ["I"]
+
+[tool.ruff.lint.per-file-ignores]
+"sgl_bench/_vendored/**" = ["I", "E", "F", "W"]
+
+[tool.black]
+target-version = ["py310"]
+line-length = 100
+extend-exclude = "sgl_bench/_vendored/"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = [
+    "live: requires a running OpenAI-compatible endpoint (skipped in default CI)",
+]

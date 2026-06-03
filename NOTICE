@@ -1,0 +1,19 @@
+sgl-bench
+Copyright contributors to the SGLang project
+
+This product includes software vendored from third-party projects, all under
+the Apache License 2.0:
+
+1. SGLang (https://github.com/sgl-project/sglang)
+   Vendored under sgl_bench/_vendored/sglang/:
+     - bench_serving.py            (python/sglang/bench_serving.py)
+     - benchmark/                  (python/sglang/benchmark/)
+     - _net.py                     (slice of python/sglang/srt/utils/network.py)
+   The exact upstream commit and per-file source paths are recorded in
+   sgl_bench/_vendored/sglang/SOURCES.yaml.
+
+2. vLLM (https://github.com/vllm-project/vllm)
+   SGLang's bench_serving.py is itself adapted from vLLM's
+   benchmarks/benchmark_serving.py and benchmarks/backend_request_func.py.
+   The original copyright notice is preserved at the top of the vendored
+   bench_serving.py.

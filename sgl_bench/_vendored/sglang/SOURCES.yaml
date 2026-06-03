@@ -1,0 +1,104 @@
+# Manifest for files vendored from sgl-project/sglang (the client-side
+# serving benchmark slice). Edit this file then run
+# `python scripts/sync_vendored.py` to refresh. Banner comments at the top
+# of each generated file point back here.
+#
+# Pinned to the SHA analyzed during extraction. Bump `synced_from_sha`
+# (prefer a release tag's commit) + rerun sync to track upstream.
+
+upstream_repo: sgl-project/sglang
+upstream_branch: main
+synced_from_sha: e5b8e3a66aa6052d86905869a7dd7c816c8401f7
+synced_at: "2026-06-03"
+
+# Audited by tests/test_vendor_audit.py: any surviving `from sglang...` /
+# `import sglang...` under _vendored/ fails. The legitimate re-pointed
+# imports read `from sgl_bench._vendored.sglang...` and are NOT flagged.
+forbid_import_prefixes:
+  - sglang
+
+# pip deps the vendored files actually import. Mirrored in pyproject.toml.
+# Heavy deps that only the (excluded) multimodal/longbench datasets pull
+# in (pillow, pybase64, pandas, datasets) are intentionally absent here.
+pinned_deps:
+  aiohttp: ""
+  requests: ""
+  numpy: ""
+  transformers: ""
+  tqdm: ""
+
+# Every `from sglang.benchmark.X` import (datasets, datasets.<mod>, utils)
+# starts with this dotted prefix, so one rule re-points them all under
+# sgl_bench._vendored. srt couplings are handled per-file below.
+import_rewrites:
+  "from sglang.benchmark.": "from sgl_bench._vendored.sglang.benchmark."
+
+# NOTE: sgl_bench/_vendored/sglang/_net.py is a hand-curated slice of
+# srt/utils/network.py (NetworkAddress + _wrap/_is_ipv6 only) -- it is NOT
+# auto-synced because network.py's module top imports zmq + psutil, which
+# we don't want. Re-verify it by hand on each SHA bump.
+files:
+  # --- the online-serving client core ---
+  - src: python/sglang/bench_serving.py
+    dst: bench_serving.py
+    replacements:
+      # NetworkAddress: re-point to the hand-vendored minimal slice.
+      - old: "from sglang.srt.utils.network import NetworkAddress"
+        new: "from sgl_bench._vendored.sglang._net import NetworkAddress"
+      # FAKE_BOOTSTRAP_HOST: inline the constant (srt/disaggregation/utils.py).
+      - old: "from sglang.srt.disaggregation.utils import FAKE_BOOTSTRAP_HOST"
+        new: 'FAKE_BOOTSTRAP_HOST = "2.2.2.2"'
+
+  # --- benchmark package + tokenizer/dataset utilities ---
+  - src: python/sglang/benchmark/__init__.py
+    dst: benchmark/__init__.py
+  - src: python/sglang/benchmark/utils.py
+    dst: benchmark/utils.py
+    replacements:
+      # Drop the nested srt tokenizer/processor branches (.json/.model files):
+      # replace each if-body with an explicit raise so the only remaining
+      # path falls through to transformers.AutoTokenizer/AutoProcessor.
+      - old: "        from sglang.srt.utils.hf_transformers_utils import get_tokenizer\n\n        return get_tokenizer(pretrained_model_name_or_path)"
+        new: "        raise ValueError(\n            \"sgl-bench (client mode) needs a HF model id/dir, not a .json/.model file\"\n        )"
+      - old: "        from sglang.srt.utils.hf_transformers_utils import get_processor\n\n        return get_processor(pretrained_model_name_or_path)"
+        new: "        raise ValueError(\n            \"sgl-bench (client mode) needs a HF model id/dir, not a .json/.model file\"\n        )"
+
+  # --- dataset registry + contract ---
+  - src: python/sglang/benchmark/datasets/__init__.py
+    dst: benchmark/datasets/__init__.py
+    replacements:
+      # M1: exclude the heavy datasets (PIL/pybase64/pandas/HF-datasets) so a
+      # bare install never imports them. Re-added behind extras in M4 with
+      # lazy import. Remove their import lines + DATASET_MAPPING entries.
+      - old: "from sglang.benchmark.datasets.image import ImageDataset\n"
+        new: ""
+      - old: "from sglang.benchmark.datasets.longbench_v2 import LongBenchV2Dataset\n"
+        new: ""
+      - old: "from sglang.benchmark.datasets.mmmu import MMMUDataset\n"
+        new: ""
+      - old: "    \"mmmu\": MMMUDataset,\n"
+        new: ""
+      - old: "    \"image\": ImageDataset,\n"
+        new: ""
+      - old: "    \"longbench_v2\": LongBenchV2Dataset,\n"
+        new: ""
+  - src: python/sglang/benchmark/datasets/common.py
+    dst: benchmark/datasets/common.py
+
+  # --- light datasets (transformers/numpy/tqdm/huggingface_hub only) ---
+  - src: python/sglang/benchmark/datasets/autobench.py
+    dst: benchmark/datasets/autobench.py
+  - src: python/sglang/benchmark/datasets/custom.py
+    dst: benchmark/datasets/custom.py
+  - src: python/sglang/benchmark/datasets/generated_shared_prefix.py
+    dst: benchmark/datasets/generated_shared_prefix.py
+  - src: python/sglang/benchmark/datasets/mooncake.py
+    dst: benchmark/datasets/mooncake.py
+  - src: python/sglang/benchmark/datasets/openai_dataset.py
+    dst: benchmark/datasets/openai_dataset.py
+  - src: python/sglang/benchmark/datasets/random.py
+    dst: benchmark/datasets/random.py
+  - src: python/sglang/benchmark/datasets/sharegpt.py
+    dst: benchmark/datasets/sharegpt.py
+  - src: python/sglang/benchmark/datasets/speed_bench.py
+    dst: benchmark/datasets/speed_bench.py
