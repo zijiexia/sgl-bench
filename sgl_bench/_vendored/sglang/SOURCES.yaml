@@ -58,6 +58,32 @@ files:
       - old: "    args = parser.parse_args()\n    _validate_parsed_gsp_args(parser, args)\n    run_benchmark(args)"
         new: "    from sgl_bench.registry import add_user_dataset_args\n    add_user_dataset_args(parser)\n    args = parser.parse_args()\n    _validate_parsed_gsp_args(parser, args)\n    run_benchmark(args)"
 
+  # --- single-batch latency client core (client-mode "one-batch") ---
+  # We keep only the client primitives (run_one_case + helpers) and drop the
+  # four server-launch / CI / orchestrator functions, which embed the engine
+  # (ServerArgs/launch_server) and GitHub-CI reporting. sgl_bench/transport/
+  # latency.py owns the (client-only) sweep loop instead.
+  - src: python/sglang/test/bench_one_batch_server_internal.py
+    dst: one_batch_client.py
+    replacements:
+      # Dataset dispatch -> overlay registry (user datasets work in latency too).
+      - old: "from sglang.benchmark.datasets import get_dataset"
+        new: "from sgl_bench.registry import get_dataset"
+      # Inline the bootstrap-host constant (used by run_one_case fake_prefill).
+      - old: "from sglang.srt.disaggregation.utils import FAKE_BOOTSTRAP_HOST"
+        new: 'FAKE_BOOTSTRAP_HOST = "2.2.2.2"'
+      # Profiling needs the in-process engine -> stub that errors in client mode.
+      - old: "from sglang.profiler import run_profile"
+        new: "def run_profile(*args, **kwargs):\n    raise RuntimeError(\n        \"profiling needs the in-process engine; unavailable in sgl-bench client mode\"\n    )"
+    drop_functions:
+      - launch_server_internal      # embeds the engine
+      - launch_server_process       # embeds the engine
+      - get_report_summary          # hints ServerArgs + is_blackwell + GitHub CI
+      - run_benchmark_internal      # launch/teardown/CI orchestrator (we own this)
+    drop_imports:
+      - sglang.srt                  # ServerArgs, launch_server, is_blackwell, kill_process_tree
+      - sglang.test                 # is_in_ci, write_github_step_summary (CI only)
+
   # --- benchmark package + tokenizer/dataset utilities ---
   - src: python/sglang/benchmark/__init__.py
     dst: benchmark/__init__.py
