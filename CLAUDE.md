@@ -40,6 +40,8 @@ per-layer/kernel timing or profiler traces (that needs the in-process engine).
 sgl_bench/
 ├── cli.py                 # `sgl-bench` entry: serve | latency | throughput | list-datasets
 ├── registry.py            # dataset overlay: @register_dataset + vendored base + extras
+├── cache.py               # --flush-cache endpoint per backend (sglang /flush_cache,
+│                          #   vllm /reset_prefix_cache); called from vendored code
 ├── transport/             # SE-owned glue (the only non-vendored runtime code)
 │   ├── _base.py           # Subcommand base (subclass discovery) + runpy delegator
 │   ├── serve.py           # online serving -> delegates to vendored bench_serving CLI

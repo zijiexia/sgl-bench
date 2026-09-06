@@ -55,6 +55,14 @@ files:
       # the audit fails on the surviving `from sglang.benchmark` import.
       - old: "from sglang.benchmark.datasets import DatasetRow, get_dataset"
         new: "from sgl_bench._vendored.sglang.benchmark.datasets.common import DatasetRow\nfrom sgl_bench.registry import get_dataset"
+      # --flush-cache: the reset endpoint is backend-specific (sglang
+      # /flush_cache vs vllm /reset_prefix_cache). Route through the SE-owned
+      # sgl_bench.cache helper, which also warns instead of silently leaving a
+      # warm cache behind. (one_batch_client already branches upstream.)
+      - old: "    if (\"sglang\" in backend and _get_bool_env_var(\"SGLANG_IS_IN_CI\")) or flush_cache:\n        requests.post(base_url + \"/flush_cache\", headers=get_auth_headers())"
+        new: "    if (\"sglang\" in backend and _get_bool_env_var(\"SGLANG_IS_IN_CI\")) or flush_cache:\n        from sgl_bench.cache import flush_cache as _flush_backend_cache\n\n        _flush_backend_cache(base_url, backend, headers=get_auth_headers())"
+      - old: "        help=\"Flush the cache before running the benchmark\","
+        new: "        help=\"Flush the prefix cache before the benchmark. Endpoint depends on \"\n        \"--backend: /flush_cache for sglang, /reset_prefix_cache for vllm \"\n        \"(needs VLLM_SERVER_DEV_MODE=1 on the server).\","
       # Let user-registered datasets add their own CLI flags right before parse.
       # (v0.5.12.post1 has no _validate_parsed_gsp_args between parse and run.)
       - old: "    args = parser.parse_args()\n    run_benchmark(args)"
