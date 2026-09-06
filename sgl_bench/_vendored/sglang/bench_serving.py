@@ -1323,7 +1323,9 @@ async def benchmark(
 
     # Flush cache
     if ("sglang" in backend and _get_bool_env_var("SGLANG_IS_IN_CI")) or flush_cache:
-        requests.post(base_url + "/flush_cache", headers=get_auth_headers())
+        from sgl_bench.cache import flush_cache as _flush_backend_cache
+
+        _flush_backend_cache(base_url, backend, headers=get_auth_headers())
 
     time.sleep(1.0)
 
@@ -2284,7 +2286,9 @@ if __name__ == "__main__":
     parser.add_argument(
         "--flush-cache",
         action="store_true",
-        help="Flush the cache before running the benchmark",
+        help="Flush the prefix cache before the benchmark. Endpoint depends on "
+        "--backend: /flush_cache for sglang, /reset_prefix_cache for vllm "
+        "(needs VLLM_SERVER_DEV_MODE=1 on the server).",
     )
     parser.add_argument(
         "--warmup-requests",
