@@ -50,6 +50,12 @@ measure compute in isolation:
 - client throughput is **≤** the engine's in-process ceiling (the client/network
   can become the bottleneck).
 
+**Reasoning models:** thinking tokens count as output. TTFT is the first
+streamed token of *any* kind (usually a thought, not the first answer token), and
+ITL covers the thinking phase too. Backends name the field differently — sglang
+streams `reasoning_content`, vLLM streams `reasoning` — and sgl-bench times both,
+so a chat run against either backend is directly comparable.
+
 For benchmarking a *deployment*, these are the right (SLO-relevant) numbers. To
 get clean, comparable results: benchmark from **close to the server**, make sure
 a single client isn't the bottleneck, use `--ignore-eos` + fixed output lengths

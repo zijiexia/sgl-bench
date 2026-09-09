@@ -480,12 +480,23 @@ async def async_request_openai_chat_completions(
                                 if not choices:
                                     continue
 
-                                # Reasoning models stream thoughts via
-                                # `reasoning_content`; count them like content.
+                                # Reasoning models stream thoughts under a
+                                # backend-specific key: sglang uses
+                                # `reasoning_content`, vLLM streams `reasoning`.
+                                # Miss one and that backend's whole thinking
+                                # phase looks like empty deltas -- TTFT only
+                                # fires on the first *content* token (or never,
+                                # if the answer is pure thinking) and the ITL
+                                # samples for those steps are lost.
+                                # `or`, not `+`: a server that sends both keys
+                                # must not have its thoughts counted twice.
                                 delta = choices[0].get("delta") or {}
-                                content = (delta.get("reasoning_content") or "") + (
-                                    delta.get("content") or ""
+                                reasoning = (
+                                    delta.get("reasoning_content")
+                                    or delta.get("reasoning")
+                                    or ""
                                 )
+                                content = reasoning + (delta.get("content") or "")
 
                                 if content:
                                     timestamp = time.perf_counter()
