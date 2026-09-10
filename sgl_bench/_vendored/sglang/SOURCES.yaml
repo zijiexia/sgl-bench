@@ -55,6 +55,11 @@ files:
       # the audit fails on the surviving `from sglang.benchmark` import.
       - old: "from sglang.benchmark.datasets import DatasetRow, get_dataset"
         new: "from sgl_bench._vendored.sglang.benchmark.datasets.common import DatasetRow\nfrom sgl_bench.registry import get_dataset"
+      # Reasoning deltas: upstream only counts sglang's `reasoning_content`,
+      # so a vLLM chat run (which names the field `reasoning`) mis-times the
+      # entire thinking phase. Count either key.
+      - old: "                                # Reasoning models stream thoughts via\n                                # `reasoning_content`; count them like content.\n                                delta = choices[0].get(\"delta\") or {}\n                                content = (delta.get(\"reasoning_content\") or \"\") + (\n                                    delta.get(\"content\") or \"\"\n                                )"
+        new: "                                # Reasoning models stream thoughts under a\n                                # backend-specific key: sglang uses\n                                # `reasoning_content`, vLLM streams `reasoning`.\n                                # Miss one and that backend's whole thinking\n                                # phase looks like empty deltas -- TTFT only\n                                # fires on the first *content* token (or never,\n                                # if the answer is pure thinking) and the ITL\n                                # samples for those steps are lost.\n                                # `or`, not `+`: a server that sends both keys\n                                # must not have its thoughts counted twice.\n                                delta = choices[0].get(\"delta\") or {}\n                                reasoning = (\n                                    delta.get(\"reasoning_content\")\n                                    or delta.get(\"reasoning\")\n                                    or \"\"\n                                )\n                                content = reasoning + (delta.get(\"content\") or \"\")"
       # --flush-cache: the reset endpoint is backend-specific (sglang
       # /flush_cache vs vllm /reset_prefix_cache). Route through the SE-owned
       # sgl_bench.cache helper, which also warns instead of silently leaving a
