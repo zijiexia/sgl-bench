@@ -1,5 +1,5 @@
-# Vendored from sgl-project/sglang@5a15cde858ea09b77116212a39356f2fc51b8584
-# Source: python/sglang/bench_serving.py
+# Vendored from sgl-project/sglang@0bcd822377da7b5718e674eaf9c870d349424dd1
+# Source: python/sglang/benchmark/serving.py
 # DO NOT EDIT directly. To upgrade, edit SOURCES.yaml and rerun
 # `python scripts/sync_vendored.py`.
 
@@ -12,9 +12,9 @@
 Benchmark online serving with dynamic requests.
 
 Usage:
-python3 -m sglang.bench_serving --backend sglang --num-prompt 10
+python3 -m sglang.benchmark.serving --backend sglang --num-prompt 10
 
-python3 -m sglang.bench_serving --backend sglang --dataset-name random --num-prompts 3000 --random-input 1024 --random-output 1024 --random-range-ratio 0.5
+python3 -m sglang.benchmark.serving --backend sglang --dataset-name random --num-prompts 3000 --random-input 1024 --random-output 1024 --random-range-ratio 0.5
 """
 
 import argparse
@@ -22,6 +22,7 @@ import asyncio
 import copy
 import importlib.util
 import json
+import math
 import os
 import random
 import shutil
@@ -39,6 +40,7 @@ from typing import Any, AsyncGenerator, Callable, Dict, List, Optional, Tuple, U
 
 import aiohttp
 import numpy as np
+import orjson
 import requests
 from tqdm.asyncio import tqdm
 from transformers import AutoTokenizer, PreTrainedTokenizerBase
@@ -53,7 +55,7 @@ from sgl_bench._vendored.sglang.benchmark.utils import (
     set_ulimit,
 )
 FAKE_BOOTSTRAP_HOST = "2.2.2.2"
-from sgl_bench._vendored.sglang._net import NetworkAddress
+from sgl_bench._vendored.sglang._net import resolve_base_url, resolve_host_port
 
 _ROUTING_KEY_HEADER = "X-SMG-Routing-Key"
 
@@ -111,6 +113,12 @@ class RequestFuncOutput:
     error: str = ""
     output_len: int = 0
     start_time: float = 0.0
+    cached_tokens: int = 0
+    cached_tokens_details: Optional[Dict[str, Any]] = None
+    spec_accept_length: float = 0.0
+    spec_cap_length: float = 0.0
+    spec_block_accept_length: float = 0.0
+    spec_cap_lens_histogram: List[int] = field(default_factory=list)
 
     @staticmethod
     def init_new(request_func_input: RequestFuncInput):
@@ -135,6 +143,15 @@ def get_request_headers() -> Dict[str, str]:
     if h := getattr(args, "header", None):
         headers.update(parse_custom_headers(h))
     return headers
+
+
+def _combine_openai_chat_content(message: Dict[str, Any]) -> str:
+    # Most OpenAI-compatible servers use ``reasoning_content``. vLLM's Kimi
+    # parser instead streams its reasoning in ``reasoning``. Prefer the
+    # standard field when both are present to avoid counting the same tokens
+    # twice on servers that expose aliases.
+    reasoning = message.get("reasoning_content") or message.get("reasoning") or ""
+    return reasoning + (message.get("content") or "")
 
 
 def wait_for_endpoint(url: str, timeout_sec: int = 60) -> bool:
@@ -230,6 +247,19 @@ async def async_request_trt_llm(
         return output
 
 
+def _extract_cache_from_sglext(data, output):
+    """Extract cache hit details from sglext in OAI-compatible responses."""
+    sglext = data.get("sglext") or {}
+    details = sglext.get("cached_tokens_details")
+    if details:
+        output.cached_tokens = (
+            (details.get("device") or 0)
+            + (details.get("host") or 0)
+            + (details.get("storage") or 0)
+        )
+        output.cached_tokens_details = details
+
+
 # set ignore_eos True by default
 async def async_request_openai_completions(
     request_func_input: RequestFuncInput,
@@ -302,6 +332,9 @@ async def async_request_openai_completions(
                             pass
                         else:
                             data = json.loads(chunk)
+
+                            if getattr(args, "cache_report", False):
+                                _extract_cache_from_sglext(data, output)
 
                             # NOTE: Some completion API might have a last
                             # usage summary response without a token so we
@@ -446,9 +479,8 @@ async def async_request_openai_chat_completions(
                     if args.disable_stream:
                         # Non-streaming response
                         response_json = await response.json()
-                        output.generated_text = response_json["choices"][0]["message"][
-                            "content"
-                        ]
+                        message = response_json["choices"][0]["message"]
+                        output.generated_text = _combine_openai_chat_content(message)
                         output.success = True
                         output.latency = time.perf_counter() - st
                         output.ttft = (
@@ -457,6 +489,21 @@ async def async_request_openai_chat_completions(
                         output.output_len = response_json.get("usage", {}).get(
                             "completion_tokens", output_len
                         )
+                        _meta_info = response_json["choices"][0].get("meta_info") or {}
+                        output.spec_accept_length = (
+                            _meta_info.get("spec_accept_length", 0.0) or 0.0
+                        )
+                        output.spec_cap_length = (
+                            _meta_info.get("spec_cap_length", 0.0) or 0.0
+                        )
+                        output.spec_block_accept_length = (
+                            _meta_info.get("spec_block_accept_length", 0.0) or 0.0
+                        )
+                        output.spec_cap_lens_histogram = (
+                            _meta_info.get("spec_cap_lens_histogram", []) or []
+                        )
+                        if getattr(args, "cache_report", False):
+                            _extract_cache_from_sglext(response_json, output)
                     else:
                         # Streaming response
                         async for chunk_bytes in response.content:
@@ -476,27 +523,17 @@ async def async_request_openai_chat_completions(
                                     "completion_tokens", output_len
                                 )
 
+                                if getattr(args, "cache_report", False):
+                                    _extract_cache_from_sglext(data, output)
+
                                 choices = data.get("choices") or []
                                 if not choices:
                                     continue
 
-                                # Reasoning models stream thoughts under a
-                                # backend-specific key: sglang uses
-                                # `reasoning_content`, vLLM streams `reasoning`.
-                                # Miss one and that backend's whole thinking
-                                # phase looks like empty deltas -- TTFT only
-                                # fires on the first *content* token (or never,
-                                # if the answer is pure thinking) and the ITL
-                                # samples for those steps are lost.
-                                # `or`, not `+`: a server that sends both keys
-                                # must not have its thoughts counted twice.
+                                # Reasoning models stream thoughts via
+                                # `reasoning_content`; count them like content.
                                 delta = choices[0].get("delta") or {}
-                                reasoning = (
-                                    delta.get("reasoning_content")
-                                    or delta.get("reasoning")
-                                    or ""
-                                )
-                                content = reasoning + (delta.get("content") or "")
+                                content = _combine_openai_chat_content(delta)
 
                                 if content:
                                     timestamp = time.perf_counter()
@@ -631,13 +668,16 @@ async def async_request_sglang_generate(
     prompt = request_func_input.prompt
 
     async with _create_bench_client_session() as session:
+        sampling_params = {
+            "temperature": args.temperature,
+            "max_new_tokens": request_func_input.output_len,
+            "ignore_eos": not args.disable_ignore_eos,
+        }
+        if args.top_p < 1.0:
+            sampling_params["top_p"] = args.top_p
         payload = {
             ("text" if isinstance(prompt, str) else "input_ids"): prompt,
-            "sampling_params": {
-                "temperature": 0.0,
-                "max_new_tokens": request_func_input.output_len,
-                "ignore_eos": not args.disable_ignore_eos,
-            },
+            "sampling_params": sampling_params,
             "stream": not args.disable_stream,
             "lora_path": request_func_input.lora_name,
             "return_logprob": args.return_logprob,
@@ -677,16 +717,35 @@ async def async_request_sglang_generate(
                         if not chunk_bytes:
                             continue
 
-                        chunk = remove_prefix(chunk_bytes.decode("utf-8"), "data: ")
+                        # Cumulative chunks make parsing O(n^2) per request on this
+                        # single asyncio thread; orjson on raw bytes is ~2.2x cheaper.
+                        sse_data = (
+                            chunk_bytes[6:]
+                            if chunk_bytes.startswith(b"data: ")
+                            else chunk_bytes
+                        )
                         latency = time.perf_counter() - st
-                        if chunk == "[DONE]":
+                        if sse_data == b"[DONE]":
                             pass
                         else:
-                            data = json.loads(chunk)
+                            data = orjson.loads(sse_data)
+
+                            _meta_info = data.get("meta_info") or {}
+                            if _meta_info.get("spec_accept_length") is not None:
+                                output.spec_accept_length = _meta_info[
+                                    "spec_accept_length"
+                                ]
 
                             # NOTE: Some completion API might have a last
                             # usage summary response without a token so we
                             # want to check a token was generated
+                            if getattr(args, "cache_report", False):
+                                _meta = data.get("meta_info") or {}
+                                output.cached_tokens = _meta.get("cached_tokens", 0)
+                                output.cached_tokens_details = _meta.get(
+                                    "cached_tokens_details"
+                                )
+
                             if "text" in data and data["text"]:
                                 timestamp = time.perf_counter()
                                 generated_text = data["text"]
@@ -891,6 +950,7 @@ ASYNC_REQUEST_FUNCS = {
     "sglang-embedding": async_request_openai_embeddings,
     "vllm": async_request_openai_completions,
     "vllm-chat": async_request_openai_chat_completions,
+    "vllm-embedding": async_request_openai_embeddings,
     "lmdeploy": async_request_openai_completions,
     "lmdeploy-chat": async_request_openai_chat_completions,
     "trt": async_request_trt_llm,
@@ -898,40 +958,101 @@ ASYNC_REQUEST_FUNCS = {
     "truss": async_request_truss,
 }
 
+# API path appended to the base URL per backend. gserver is special (bare
+# host:port, no path) and is handled separately, so it is not listed here.
+_BACKEND_API_PATHS = {
+    "sglang": "/generate",
+    "sglang-native": "/generate",
+    "sglang-oai": "/v1/completions",
+    "sglang-oai-chat": "/v1/chat/completions",
+    "sglang-embedding": "/v1/embeddings",
+    "vllm": "/v1/completions",
+    "vllm-chat": "/v1/chat/completions",
+    "vllm-embedding": "/v1/embeddings",
+    "lmdeploy": "/v1/completions",
+    "lmdeploy-chat": "/v1/chat/completions",
+    "trt": "/v2/models/ensemble/generate_stream",
+    "truss": "/v1/models/model:predict",
+}
+
+_EMBEDDING_BACKENDS = frozenset(("sglang-embedding", "vllm-embedding"))
+
+_DEFAULT_SGLANG_FLUSH_CACHE_TIMEOUT = 60.0
+
+
+def flush_server_cache(
+    base_url: str,
+    backend: str,
+    flush_cache_timeout: float = _DEFAULT_SGLANG_FLUSH_CACHE_TIMEOUT,
+) -> None:
+    """Flush an engine's prefix cache after benchmark warmup."""
+    if backend.startswith("vllm"):
+        response = requests.post(
+            base_url + "/reset_prefix_cache", headers=get_auth_headers()
+        )
+    elif backend.startswith("sglang"):
+        response = requests.post(
+            base_url + "/flush_cache",
+            headers=get_auth_headers(),
+            params={"timeout": flush_cache_timeout},
+        )
+    else:
+        response = requests.post(base_url + "/flush_cache", headers=get_auth_headers())
+    response.raise_for_status()
+
 
 @dataclass
 class BenchmarkMetrics:
+    # Request counts and token totals
     completed: int
     total_input: int
     total_input_text: int
     total_input_vision: int
     total_output: int
     total_output_retokenized: int
+
+    # Throughput (req/s and tok/s)
     request_throughput: float
     input_throughput: float
     output_throughput: float
     output_throughput_retokenized: float
     total_throughput: float
     total_throughput_retokenized: float
+
+    # TTFT - Time to First Token (ms)
     mean_ttft_ms: float
     median_ttft_ms: float
     std_ttft_ms: float
+    p90_ttft_ms: float
+    p95_ttft_ms: float
     p99_ttft_ms: float
+
+    # TPOT - Time per Output Token, excluding the first token (ms)
     mean_tpot_ms: float
     median_tpot_ms: float
     std_tpot_ms: float
+    p90_tpot_ms: float
+    p95_tpot_ms: float
     p99_tpot_ms: float
+
+    # ITL - Inter-Token Latency (ms)
     mean_itl_ms: float
     median_itl_ms: float
     std_itl_ms: float
+    p90_itl_ms: float
     p95_itl_ms: float
     p99_itl_ms: float
     max_itl_ms: float
+
+    # E2E - End-to-End request latency (ms)
     mean_e2e_latency_ms: float
     median_e2e_latency_ms: float
     std_e2e_latency_ms: float
     p90_e2e_latency_ms: float
+    p95_e2e_latency_ms: float
     p99_e2e_latency_ms: float
+
+    # Concurrency and peak metrics
     concurrency: float
     max_output_tokens_per_s: float = 0.0
     max_concurrent_requests: int = 0
@@ -1128,14 +1249,19 @@ def calculate_metrics(
         * 1000,  # ttfts is empty if streaming is not supported by backend
         median_ttft_ms=np.median(ttfts or 0) * 1000,
         std_ttft_ms=np.std(ttfts or 0) * 1000,
+        p90_ttft_ms=np.percentile(ttfts or 0, 90) * 1000,
+        p95_ttft_ms=np.percentile(ttfts or 0, 95) * 1000,
         p99_ttft_ms=np.percentile(ttfts or 0, 99) * 1000,
         mean_tpot_ms=np.mean(tpots or 0) * 1000,
         median_tpot_ms=np.median(tpots or 0) * 1000,
         std_tpot_ms=np.std(tpots or 0) * 1000,
+        p90_tpot_ms=np.percentile(tpots or 0, 90) * 1000,
+        p95_tpot_ms=np.percentile(tpots or 0, 95) * 1000,
         p99_tpot_ms=np.percentile(tpots or 0, 99) * 1000,
         mean_itl_ms=np.mean(itls or 0) * 1000,
         median_itl_ms=np.median(itls or 0) * 1000,
         std_itl_ms=np.std(itls or 0) * 1000,
+        p90_itl_ms=np.percentile(itls or 0, 90) * 1000,
         p95_itl_ms=np.percentile(itls or 0, 95) * 1000,
         p99_itl_ms=np.percentile(itls or 0, 99) * 1000,
         max_itl_ms=np.max(itls or 0) * 1000,
@@ -1143,6 +1269,7 @@ def calculate_metrics(
         median_e2e_latency_ms=np.median(e2e_latencies) * 1000,
         std_e2e_latency_ms=np.std(e2e_latencies) * 1000,
         p90_e2e_latency_ms=np.percentile(e2e_latencies, 90) * 1000,
+        p95_e2e_latency_ms=np.percentile(e2e_latencies, 95) * 1000,
         p99_e2e_latency_ms=np.percentile(e2e_latencies, 99) * 1000,
         concurrency=np.sum(e2e_latencies) / dur_s,
         max_output_tokens_per_s=max_output_tokens_per_s,
@@ -1219,7 +1346,7 @@ async def benchmark(
     base_url: str,
     model_id: str,
     tokenizer: PreTrainedTokenizerBase,
-    input_requests: List[DatasetRow],
+    input_requests: List[Union[DatasetRow, Dict[str, Any]]],
     request_rate: float,
     max_concurrency: Optional[int],
     disable_tqdm: bool,
@@ -1230,6 +1357,7 @@ async def benchmark(
     profile: bool,
     pd_separated: bool = False,
     flush_cache: bool = False,
+    flush_cache_timeout: float = _DEFAULT_SGLANG_FLUSH_CACHE_TIMEOUT,
     warmup_requests: int = 1,
     use_trace_timestamps: bool = False,
     mooncake_slowdown_factor=1.0,
@@ -1242,14 +1370,20 @@ async def benchmark(
     else:
         raise ValueError(f"Unknown backend: {backend}")
 
+    is_mooncake = args.dataset_name == "mooncake"
     # Multi-turn iff prompt[0] is a valid per-round payload. Single-shot
     # OpenAI messages (List[Dict]) is excluded since its first element is a dict.
-    first_prompt = input_requests[0].prompt
-    is_multi_turn = (
-        isinstance(first_prompt, list)
-        and bool(first_prompt)
-        and _normalize_round_messages(first_prompt[0]) is not None
-    )
+    if is_mooncake:
+        # Mooncake dataset rows are raw trace dictionaries. They are converted
+        # into DatasetRow objects by get_mooncake_request_over_time below.
+        is_multi_turn = False
+    else:
+        first_prompt = input_requests[0].prompt
+        is_multi_turn = (
+            isinstance(first_prompt, list)
+            and bool(first_prompt)
+            and _normalize_round_messages(first_prompt[0]) is not None
+        )
     if is_multi_turn:
         request_func = wrap_multi_turn_request_func(request_func, backend=backend)
 
@@ -1267,7 +1401,7 @@ async def benchmark(
     print(f"Starting warmup with {warmup_requests} sequences...")
 
     # Handle the data structure difference for the warmup request
-    if args.dataset_name == "mooncake":
+    if is_mooncake:
         # For mooncake, input_requests is a list of dicts.
         # We need to build a temporary DatasetRow for the warmup phase.
         warmup_record = input_requests[0]
@@ -1332,11 +1466,14 @@ async def benchmark(
             f"Warmup completed with {args.warmup_requests} sequences. Starting main benchmark run..."
         )
 
-    # Flush cache
-    if ("sglang" in backend and _get_bool_env_var("SGLANG_IS_IN_CI")) or flush_cache:
-        from sgl_bench.cache import flush_cache as _flush_backend_cache
-
-        _flush_backend_cache(base_url, backend, headers=get_auth_headers())
+    # Flush cache after warmup so the measured run does not benefit from
+    # request-local prefix reuse. vLLM exposes a different, development-mode
+    # endpoint for the same purpose.
+    should_flush_cache = (
+        "sglang" in backend and _get_bool_env_var("SGLANG_IS_IN_CI")
+    ) or flush_cache
+    if should_flush_cache:
+        flush_server_cache(base_url, backend, flush_cache_timeout)
 
     time.sleep(1.0)
 
@@ -1368,7 +1505,7 @@ async def benchmark(
     tasks: List[asyncio.Task] = []
     pbar_total = len(input_requests)
     if (
-        backend == "sglang" and args.dataset_name == "mooncake"
+        backend == "sglang" and is_mooncake
     ):  # Assuming mooncake is mainly for sglang or similar backends
         print("Using time-based Mooncake request scheduler, ignoring --request-rate.")
         request_generator = get_mooncake_request_over_time(
@@ -1392,7 +1529,9 @@ async def benchmark(
         lora_probs = None
 
     pbar = None if disable_tqdm else tqdm(total=pbar_total)
+    benchmark_requests: List[DatasetRow] = []
     async for request in request_generator:
+        benchmark_requests.append(request)
         if lora_names is not None and len(lora_names) != 0:
             if lora_request_distribution == "uniform":
                 lora_name = random.choice(lora_names)
@@ -1478,7 +1617,7 @@ async def benchmark(
     # Compute metrics and print results
     benchmark_duration = time.perf_counter() - benchmark_start_time
     metrics, output_lens = calculate_metrics(
-        input_requests=None if is_multi_turn else input_requests,
+        input_requests=None if is_multi_turn else benchmark_requests,
         outputs=outputs,
         dur_s=benchmark_duration,
         tokenizer=tokenizer,
@@ -1510,7 +1649,7 @@ async def benchmark(
                 "Total input vision tokens:", metrics.total_input_vision
             )
         )
-    is_embedding = backend == "sglang-embedding"
+    is_embedding = backend in _EMBEDDING_BACKENDS
     if not is_embedding:
         print("{:<40} {:<10}".format("Total generated tokens:", metrics.total_output))
         print(
@@ -1568,12 +1707,17 @@ async def benchmark(
         "{:<40} {:<10.2f}".format("P90 E2E Latency (ms):", metrics.p90_e2e_latency_ms)
     )
     print(
+        "{:<40} {:<10.2f}".format("P95 E2E Latency (ms):", metrics.p95_e2e_latency_ms)
+    )
+    print(
         "{:<40} {:<10.2f}".format("P99 E2E Latency (ms):", metrics.p99_e2e_latency_ms)
     )
     if not is_embedding:
         print("{s:{c}^{n}}".format(s="Time to First Token", n=50, c="-"))
         print("{:<40} {:<10.2f}".format("Mean TTFT (ms):", metrics.mean_ttft_ms))
         print("{:<40} {:<10.2f}".format("Median TTFT (ms):", metrics.median_ttft_ms))
+        print("{:<40} {:<10.2f}".format("P90 TTFT (ms):", metrics.p90_ttft_ms))
+        print("{:<40} {:<10.2f}".format("P95 TTFT (ms):", metrics.p95_ttft_ms))
         print("{:<40} {:<10.2f}".format("P99 TTFT (ms):", metrics.p99_ttft_ms))
         print(
             "{s:{c}^{n}}".format(
@@ -1582,13 +1726,68 @@ async def benchmark(
         )
         print("{:<40} {:<10.2f}".format("Mean TPOT (ms):", metrics.mean_tpot_ms))
         print("{:<40} {:<10.2f}".format("Median TPOT (ms):", metrics.median_tpot_ms))
+        print("{:<40} {:<10.2f}".format("P90 TPOT (ms):", metrics.p90_tpot_ms))
+        print("{:<40} {:<10.2f}".format("P95 TPOT (ms):", metrics.p95_tpot_ms))
         print("{:<40} {:<10.2f}".format("P99 TPOT (ms):", metrics.p99_tpot_ms))
         print("{s:{c}^{n}}".format(s="Inter-Token Latency", n=50, c="-"))
         print("{:<40} {:<10.2f}".format("Mean ITL (ms):", metrics.mean_itl_ms))
         print("{:<40} {:<10.2f}".format("Median ITL (ms):", metrics.median_itl_ms))
+        print("{:<40} {:<10.2f}".format("P90 ITL (ms):", metrics.p90_itl_ms))
         print("{:<40} {:<10.2f}".format("P95 ITL (ms):", metrics.p95_itl_ms))
         print("{:<40} {:<10.2f}".format("P99 ITL (ms):", metrics.p99_itl_ms))
         print("{:<40} {:<10.2f}".format("Max ITL (ms):", metrics.max_itl_ms))
+    if args.cache_report:
+        total_prompt_tokens = 0
+        total_cached = 0
+        total_device = total_host = total_storage = 0
+        storage_backend_name = None
+        has_details = False
+        for o in outputs:
+            if not o.success:
+                continue
+            total_prompt_tokens += o.prompt_len
+            total_cached += o.cached_tokens
+            if o.cached_tokens_details:
+                has_details = True
+                total_device += o.cached_tokens_details.get("device") or 0
+                total_host += o.cached_tokens_details.get("host") or 0
+                s = o.cached_tokens_details.get("storage") or 0
+                if s:
+                    total_storage += s
+                    storage_backend_name = o.cached_tokens_details.get(
+                        "storage_backend"
+                    )
+        hit_rate = (
+            total_cached / total_prompt_tokens * 100 if total_prompt_tokens > 0 else 0.0
+        )
+
+        print("{s:{c}^{n}}".format(s="Cache Hit Details", n=50, c="-"))
+        print("{:<40} {:<10}".format("Total prompt tokens:", total_prompt_tokens))
+        print("{:<40} {:<10}".format("Total cached tokens:", total_cached))
+        if has_details and total_cached > 0:
+            print("{:<40} {:<10}".format("  Device:", total_device))
+            print("{:<40} {:<10}".format("  Host:", total_host))
+            if total_storage > 0:
+                label = (
+                    f"  Storage ({storage_backend_name}):"
+                    if storage_backend_name
+                    else "  Storage:"
+                )
+                print("{:<40} {:<10}".format(label, total_storage))
+        print("{:<40} {:.1f}%".format("Cache hit rate:", hit_rate))
+        if has_details and total_cached > 0:
+            device_pct = total_device / total_cached * 100
+            host_pct = total_host / total_cached * 100
+            print("{:<40} {:.1f}%".format("  Device:", device_pct))
+            print("{:<40} {:.1f}%".format("  Host:", host_pct))
+            if total_storage > 0:
+                storage_pct = total_storage / total_cached * 100
+                label = (
+                    f"  Storage ({storage_backend_name}):"
+                    if storage_backend_name
+                    else "  Storage:"
+                )
+                print("{:<40} {:.1f}%".format(label, storage_pct))
     print("=" * 50)
 
     resp = requests.get(base_url + "/server_info", headers=get_auth_headers())
@@ -1628,18 +1827,24 @@ async def benchmark(
             "median_e2e_latency_ms": metrics.median_e2e_latency_ms,
             "std_e2e_latency_ms": metrics.std_e2e_latency_ms,
             "p90_e2e_latency_ms": metrics.p90_e2e_latency_ms,
+            "p95_e2e_latency_ms": metrics.p95_e2e_latency_ms,
             "p99_e2e_latency_ms": metrics.p99_e2e_latency_ms,
             "mean_ttft_ms": metrics.mean_ttft_ms,
             "median_ttft_ms": metrics.median_ttft_ms,
             "std_ttft_ms": metrics.std_ttft_ms,
+            "p90_ttft_ms": metrics.p90_ttft_ms,
+            "p95_ttft_ms": metrics.p95_ttft_ms,
             "p99_ttft_ms": metrics.p99_ttft_ms,
             "mean_tpot_ms": metrics.mean_tpot_ms,
             "median_tpot_ms": metrics.median_tpot_ms,
             "std_tpot_ms": metrics.std_tpot_ms,
+            "p90_tpot_ms": metrics.p90_tpot_ms,
+            "p95_tpot_ms": metrics.p95_tpot_ms,
             "p99_tpot_ms": metrics.p99_tpot_ms,
             "mean_itl_ms": metrics.mean_itl_ms,
             "median_itl_ms": metrics.median_itl_ms,
             "std_itl_ms": metrics.std_itl_ms,
+            "p90_itl_ms": metrics.p90_itl_ms,
             "p95_itl_ms": metrics.p95_itl_ms,
             "p99_itl_ms": metrics.p99_itl_ms,
             "concurrency": metrics.concurrency,
@@ -1647,6 +1852,17 @@ async def benchmark(
             "max_output_tokens_per_s": metrics.max_output_tokens_per_s,
             "max_concurrent_requests": metrics.max_concurrent_requests,
         }
+
+        if args.cache_report:
+            result["cache_report"] = {
+                "total_prompt_tokens": total_prompt_tokens,
+                "total_cached_tokens": total_cached,
+                "cache_hit_rate_pct": round(hit_rate, 2),
+                "device_cached_tokens": total_device if has_details else None,
+                "host_cached_tokens": total_host if has_details else None,
+                "storage_cached_tokens": (total_storage if total_storage > 0 else None),
+                "storage_backend": storage_backend_name,
+            }
     else:
         print(f"Error running benchmark for request rate: {request_rate}")
         print("-" * 30)
@@ -1677,6 +1893,12 @@ async def benchmark(
         "generated_texts": [output.generated_text for output in outputs],
         "errors": [output.error for output in outputs],
     }
+
+    if args.cache_report:
+        result_details["cached_tokens"] = [o.cached_tokens for o in outputs]
+        result_details["cached_tokens_details"] = [
+            o.cached_tokens_details for o in outputs
+        ]
 
     # Append results to a JSONL file
     with open(output_file_name, "a") as file:
@@ -1734,6 +1956,11 @@ def run_benchmark(args_: argparse.Namespace):
     if not hasattr(args, "return_logprob"):
         args.return_logprob = False
 
+    if not hasattr(args, "temperature"):
+        args.temperature = 0.0
+    if not hasattr(args, "top_p"):
+        args.top_p = 1.0
+
     if not hasattr(args, "use_trace_timestamps"):
         args.use_trace_timestamps = False
     if not hasattr(args, "mooncake_slowdown_factor"):
@@ -1748,6 +1975,9 @@ def run_benchmark(args_: argparse.Namespace):
     if not hasattr(args, "served_model_name"):
         args.served_model_name = None
 
+    if not hasattr(args, "cache_report"):
+        args.cache_report = False
+
     if getattr(args, "print_requests", False):
         assert args.backend == "sglang-oai-chat"  # only support this now
 
@@ -1761,6 +1991,13 @@ def run_benchmark(args_: argparse.Namespace):
     extra_request_body = {}
     if args.extra_request_body:
         extra_request_body = json.loads(args.extra_request_body)
+
+    if args.cache_report:
+        sglang_backends = ("sglang", "sglang-native", "sglang-oai", "sglang-oai-chat")
+        if args.backend not in sglang_backends:
+            print("WARNING: --cache-report is only supported with sglang backends.")
+        elif args.backend in ("sglang-oai", "sglang-oai-chat"):
+            extra_request_body["return_cached_tokens_details"] = True
 
     # Inject bootstrap fields for fake decode benchmarking
     if getattr(args, "fake_prefill", False):
@@ -1780,64 +2017,28 @@ def run_benchmark(args_: argparse.Namespace):
             "sglang-oai": 30000,
             "lmdeploy": 23333,
             "vllm": 8000,
+            "vllm-embedding": 8000,
             "trt": 8000,
             "gserver": 9988,
             "truss": 8080,
         }.get(args.backend, 30000)
 
-    # Build base URL with proper IPv6 bracket wrapping (only when base_url is not provided)
-    if not args.base_url:
-        _na = NetworkAddress(args.host, args.port)
-        _host_base = _na.to_url()
-    else:
-        _na = None
-        _host_base = None
+    # Base URL the client sends to: --base-url if given, else http://host:port
+    # (IPv6-correct). gserver uses the scheme-less host:port form instead.
+    base_url = resolve_base_url(args.base_url, args.host, args.port)
 
-    model_url = (
-        f"{args.base_url}/v1/models" if args.base_url else f"{_host_base}/v1/models"
-    )
+    model_url = f"{base_url}/v1/models"
 
-    if args.backend == "sglang-embedding":
-        api_url = (
-            f"{args.base_url}/v1/embeddings"
-            if args.base_url
-            else f"http://{args.host}:{args.port}/v1/embeddings"
-        )
-    elif args.backend in ["sglang", "sglang-native"]:
-        api_url = (
-            f"{args.base_url}/generate" if args.base_url else f"{_host_base}/generate"
-        )
-    elif args.backend in ["sglang-oai", "vllm", "lmdeploy"]:
-        api_url = (
-            f"{args.base_url}/v1/completions"
-            if args.base_url
-            else f"{_host_base}/v1/completions"
-        )
-    elif args.backend in ["sglang-oai-chat", "vllm-chat", "lmdeploy-chat"]:
-        api_url = (
-            f"{args.base_url}/v1/chat/completions"
-            if args.base_url
-            else f"{_host_base}/v1/chat/completions"
-        )
-    elif args.backend == "trt":
-        api_url = (
-            f"{args.base_url}/v2/models/ensemble/generate_stream"
-            if args.base_url
-            else f"{_host_base}/v2/models/ensemble/generate_stream"
-        )
-        if args.model is None:
-            print("Please provide a model using `--model` when using `trt` backend.")
-            sys.exit(1)
-    elif args.backend == "gserver":
-        api_url = args.base_url if args.base_url else _na.to_host_port_str()
+    if args.backend == "gserver":
+        # gRPC server takes a bare host:port, not an http URL.
+        api_url = resolve_host_port(args.base_url, args.host, args.port)
         args.model = args.model or "default"
-    elif args.backend == "truss":
-        api_url = (
-            f"{args.base_url}/v1/models/model:predict"
-            if args.base_url
-            else f"{_host_base}/v1/models/model:predict"
-        )
-    base_url = _host_base if args.base_url is None else args.base_url
+    else:
+        api_url = f"{base_url}{_BACKEND_API_PATHS[args.backend]}"
+
+    if args.backend == "trt" and args.model is None:
+        print("Please provide a model using `--model` when using `trt` backend.")
+        sys.exit(1)
 
     # Wait for server to be ready
     if args.ready_check_timeout_sec > 0:
@@ -1868,14 +2069,14 @@ def run_benchmark(args_: argparse.Namespace):
         print("No model specified or found. Please provide a model using `--model`.")
         sys.exit(1)
 
-    if args.backend != "sglang-embedding" and not check_chat_template(args.model):
+    if args.backend not in _EMBEDDING_BACKENDS and not check_chat_template(args.model):
         print(
             "\nWARNING It is recommended to use the `Chat` or `Instruct` model for benchmarking.\n"
             "Because when the tokenizer counts the output tokens, if there is gibberish, it might count incorrectly.\n"
         )
 
     if (
-        args.backend == "sglang-embedding"
+        args.backend in _EMBEDDING_BACKENDS
         and args.dataset_name in _EMBEDDING_UNSUPPORTED_DATASETS
     ):
         print(f"{args.dataset_name} dataset is unsupported for embeddings benchmark")
@@ -1901,13 +2102,28 @@ def run_benchmark(args_: argparse.Namespace):
     # Read dataset
     backend = args.backend
     model_id = args.served_model_name or args.model
-    tokenizer_id = args.tokenizer if args.tokenizer is not None else args.model
+    tokenizer_id = args.tokenizer
+    if tokenizer_id is None:
+        try:
+            resp = requests.get(
+                base_url + "/model_info", headers=get_auth_headers(), timeout=5
+            )
+            if resp.status_code == 200:
+                info = resp.json()
+                tokenizer_id = info.get("tokenizer_path") or info.get("model_path")
+        except Exception:
+            pass
+    if tokenizer_id is None:
+        tokenizer_id = args.model
+
     tokenizer = get_tokenizer(tokenizer_id)
     input_requests = get_dataset(args, tokenizer, model_id)
 
     # compatible with SimpleNamespace
     if not hasattr(args, "flush_cache"):
         args.flush_cache = False
+    if not hasattr(args, "flush_cache_timeout"):
+        args.flush_cache_timeout = _DEFAULT_SGLANG_FLUSH_CACHE_TIMEOUT
 
     # Prepare LoRA arguments
     lora_request_distribution = (
@@ -1938,6 +2154,7 @@ def run_benchmark(args_: argparse.Namespace):
             profile=args.profile,
             pd_separated=args.pd_separated,
             flush_cache=args.flush_cache,
+            flush_cache_timeout=args.flush_cache_timeout,
             warmup_requests=args.warmup_requests,
             use_trace_timestamps=args.use_trace_timestamps,
             mooncake_slowdown_factor=args.mooncake_slowdown_factor,
@@ -1948,6 +2165,44 @@ def run_benchmark(args_: argparse.Namespace):
     )
 
 
+def _finite_positive_float(value) -> float:
+    """argparse type for a finite, strictly positive float."""
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError) as exc:
+        raise argparse.ArgumentTypeError(
+            f"expected a finite float > 0, got {value!r}"
+        ) from exc
+    if not math.isfinite(parsed) or parsed <= 0:
+        raise argparse.ArgumentTypeError(f"expected a finite float > 0, got {value!r}")
+    return parsed
+
+
+def _validate_parsed_gsp_args(
+    parser: argparse.ArgumentParser, args: argparse.Namespace
+) -> None:
+    """Reject malformed GSP distribution/alpha combinations at parse time.
+
+    Invoked from the CLI entry point right after ``parser.parse_args()`` so
+    users see a clear argparse-style error before any server, model, or
+    tokenizer setup runs and masks the real cause with an unrelated network
+    failure.
+    """
+    distribution = getattr(args, "gsp_group_distribution", None)
+    alpha = getattr(args, "gsp_zipf_alpha", None)
+    if distribution == "zipf" and alpha is None:
+        parser.error(
+            "--gsp-group-distribution=zipf requires --gsp-zipf-alpha "
+            "(a finite float > 0)"
+        )
+    if distribution == "uniform" and alpha is not None:
+        parser.error(
+            "--gsp-zipf-alpha is only meaningful with "
+            "--gsp-group-distribution=zipf; remove --gsp-zipf-alpha "
+            "or set --gsp-group-distribution=zipf"
+        )
+
+
 class LoRAPathAction(argparse.Action):
     def __call__(self, parser, namespace, values, option_string=None):
         setattr(namespace, self.dest, [])
@@ -1955,7 +2210,7 @@ class LoRAPathAction(argparse.Action):
             getattr(namespace, self.dest).append(lora_name)
 
 
-if __name__ == "__main__":
+def cli_main():
     parser = ArgumentParser(description="Benchmark the online serving throughput.")
     parser.add_argument(
         "--backend",
@@ -1989,7 +2244,7 @@ if __name__ == "__main__":
         type=str,
         default="sharegpt",
         choices=[
-            "autobench",
+            "agentic-trace",
             "sharegpt",
             "custom",
             "openai",
@@ -2000,11 +2255,40 @@ if __name__ == "__main__":
             "image",
             "mooncake",
             "longbench_v2",
+            "speed-bench",
         ],
         help="Name of the dataset to benchmark on.",
     )
     parser.add_argument(
         "--dataset-path", type=str, default="", help="Path to the dataset."
+    )
+    parser.add_argument(
+        "--dataset-offset",
+        type=int,
+        default=0,
+        help="Rotate the conversation list by this many entries before sampling "
+        "(agentic-trace dataset), so successive sweep steps start on fresh "
+        "conversations.",
+    )
+    parser.add_argument(
+        "--agentic-max-turns",
+        type=int,
+        default=None,
+        help="Cap each conversation to at most this many turns (agentic-trace "
+        "dataset). Default: use all turns in the trace.",
+    )
+    parser.add_argument(
+        "--speed-bench-category",
+        type=str,
+        default=None,
+        choices=["low_entropy", "mixed", "high_entropy"],
+        help="Category filter for the speed-bench dataset.",
+    )
+    parser.add_argument(
+        "--speed-bench-output-len",
+        type=int,
+        default=512,
+        help="Fixed output length for speed-bench requests (default: 512).",
     )
     parser.add_argument(
         "--model",
@@ -2071,7 +2355,9 @@ if __name__ == "__main__":
         default="1080p",
         help=(
             "Resolution of images for image dataset. "
-            "Supports presets 4k/1080p/720p/360p or custom 'heightxwidth' (e.g., 1080x1920)."
+            "Supports presets 4k/1080p/720p/360p, custom 'heightxwidth' "
+            "(e.g., 1080x1920), or random 'random:<min_h>x<min_w>-<max_h>x<max_w>' "
+            "bounds (e.g., random:256x256-1024x1024)."
         ),
     )
     parser.add_argument(
@@ -2164,11 +2450,29 @@ if __name__ == "__main__":
         action="store_true",
         help="Return routed experts.",
     )
-    parser.add_argument("--seed", type=int, default=1, help="The random seed.")
+    parser.add_argument(
+        "--cache-report",
+        action="store_true",
+        help="Collect and display cache hit statistics after the benchmark. "
+        "Supported with sglang backends (native, oai, oai-chat).",
+    )
+    parser.add_argument("--seed", type=int, default=42, help="The random seed.")
     parser.add_argument(
         "--disable-ignore-eos",
         action="store_true",
         help="Disable ignoring EOS.",
+    )
+    parser.add_argument(
+        "--temperature",
+        type=float,
+        default=0.0,
+        help="Sampling temperature.",
+    )
+    parser.add_argument(
+        "--top-p",
+        type=float,
+        default=1.0,
+        help="Nucleus sampling parameter.",
     )
     parser.add_argument(
         "--extra-request-body",
@@ -2297,9 +2601,13 @@ if __name__ == "__main__":
     parser.add_argument(
         "--flush-cache",
         action="store_true",
-        help="Flush the prefix cache before the benchmark. Endpoint depends on "
-        "--backend: /flush_cache for sglang, /reset_prefix_cache for vllm "
-        "(needs VLLM_SERVER_DEV_MODE=1 on the server).",
+        help="Flush the cache before running the benchmark",
+    )
+    parser.add_argument(
+        "--flush-cache-timeout",
+        type=_finite_positive_float,
+        default=_DEFAULT_SGLANG_FLUSH_CACHE_TIMEOUT,
+        help="Maximum seconds to wait for an SGLang server to become idle before flushing the cache",
     )
     parser.add_argument(
         "--warmup-requests",
@@ -2372,6 +2680,37 @@ if __name__ == "__main__":
         action="store_true",
         help="Keep requests in order without shuffling. By default, requests are shuffled randomly.",
     )
+    group.add_argument(
+        "--gsp-group-distribution",
+        type=str,
+        choices=["uniform", "zipf"],
+        default="uniform",
+        help=(
+            "Prefix-group sampling distribution for generated-shared-prefix. "
+            "'uniform' (default) assigns each group an equal number of requests. "
+            "'zipf' samples each request's group by rank with "
+            "p(rank) = (1/rank**alpha) / sum_k(1/k**alpha); rank starts at 1 "
+            "and group index 0 is the hottest. Requires --gsp-zipf-alpha "
+            "(a finite float > 0) when set to 'zipf'. Total request count is "
+            "still num_groups * prompts_per_group, identical to uniform mode; "
+            "only the per-request group assignment changes. The on-disk "
+            "dataset cache uses a distinct key per (group_distribution, "
+            "zipf_alpha), so uniform-mode caches are never mixed with "
+            "zipf-mode caches and zipf runs with different alpha use "
+            "separate files."
+        ),
+    )
+    group.add_argument(
+        "--gsp-zipf-alpha",
+        type=_finite_positive_float,
+        default=None,
+        help=(
+            "Zipf exponent alpha for --gsp-group-distribution=zipf, with "
+            "p(rank) = (1/rank**alpha) / sum_k(1/k**alpha) and rank starting "
+            "at 1. Must be a finite float strictly greater than 0; larger "
+            "values concentrate requests on lower-ranked (hotter) groups."
+        ),
+    )
     mooncake_group = parser.add_argument_group("mooncake dataset arguments")
     mooncake_group.add_argument(
         "--mooncake-slowdown-factor",
@@ -2419,6 +2758,12 @@ if __name__ == "__main__":
         help="Custom HTTP headers in Key=Value format. Example: --header MyHeader=MY_VALUE MyAnotherHeader=myanothervalue",
     )
     from sgl_bench.registry import add_user_dataset_args
+
     add_user_dataset_args(parser)
     args = parser.parse_args()
+    _validate_parsed_gsp_args(parser, args)
     run_benchmark(args)
+
+
+if __name__ == "__main__":
+    cli_main()

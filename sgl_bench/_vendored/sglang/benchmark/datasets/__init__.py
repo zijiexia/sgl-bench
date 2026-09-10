@@ -1,11 +1,11 @@
-# Vendored from sgl-project/sglang@5a15cde858ea09b77116212a39356f2fc51b8584
+# Vendored from sgl-project/sglang@0bcd822377da7b5718e674eaf9c870d349424dd1
 # Source: python/sglang/benchmark/datasets/__init__.py
 # DO NOT EDIT directly. To upgrade, edit SOURCES.yaml and rerun
 # `python scripts/sync_vendored.py`.
 
 from typing import Dict, Type
 
-from sgl_bench._vendored.sglang.benchmark.datasets.autobench import AutoBenchmarkDataset
+from sgl_bench._vendored.sglang.benchmark.datasets.agentic_trace import AgenticTraceDataset
 from sgl_bench._vendored.sglang.benchmark.datasets.common import BaseDataset, DatasetRow
 from sgl_bench._vendored.sglang.benchmark.datasets.custom import CustomDataset
 from sgl_bench._vendored.sglang.benchmark.datasets.generated_shared_prefix import (
@@ -15,9 +15,10 @@ from sgl_bench._vendored.sglang.benchmark.datasets.mooncake import MooncakeDatas
 from sgl_bench._vendored.sglang.benchmark.datasets.openai_dataset import OpenAIDataset
 from sgl_bench._vendored.sglang.benchmark.datasets.random import RandomDataset
 from sgl_bench._vendored.sglang.benchmark.datasets.sharegpt import ShareGPTDataset
+from sgl_bench._vendored.sglang.benchmark.datasets.speed_bench import SpeedBenchDataset
 
 DATASET_MAPPING: Dict[str, Type[BaseDataset]] = {
-    "autobench": AutoBenchmarkDataset,
+    "agentic-trace": AgenticTraceDataset,
     "sharegpt": ShareGPTDataset,
     "custom": CustomDataset,
     "openai": OpenAIDataset,
@@ -27,6 +28,7 @@ DATASET_MAPPING: Dict[str, Type[BaseDataset]] = {
     "random-ids": RandomDataset,
     "generated-shared-prefix": GeneratedSharedPrefixDataset,
     "mooncake": MooncakeDataset,
+    "speed-bench": SpeedBenchDataset,
 }
 
 

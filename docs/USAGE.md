@@ -220,10 +220,11 @@ These are real lessons from benchmarking DeepSeek-V4 on B200 — they matter a l
 - **Apples-to-apples:** fix lengths with `--random-range-ratio 1.0`, pin
   `--seed`, and `--flush-cache` for a clean cold-cache run (omit it / use the
   shared-prefix dataset for cache-hit scenarios). `--flush-cache` picks the
-  endpoint from `--backend`: `/flush_cache` for sglang, `/reset_prefix_cache`
+  endpoint from `--backend`: `/flush_cache` for sglang (waiting up to
+  `--flush-cache-timeout` seconds for the server to go idle), `/reset_prefix_cache`
   for vllm — the latter is only mounted when the vllm server was started with
-  `VLLM_SERVER_DEV_MODE=1`. If the flush is rejected, sgl-bench prints a
-  warning rather than quietly measuring a warm cache.
+  `VLLM_SERVER_DEV_MODE=1`. A rejected flush aborts the run rather than quietly
+  measuring a warm cache.
 
 ---
 

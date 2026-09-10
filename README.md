@@ -53,8 +53,8 @@ measure compute in isolation:
 **Reasoning models:** thinking tokens count as output. TTFT is the first
 streamed token of *any* kind (usually a thought, not the first answer token), and
 ITL covers the thinking phase too. Backends name the field differently — sglang
-streams `reasoning_content`, vLLM streams `reasoning` — and sgl-bench times both,
-so a chat run against either backend is directly comparable.
+streams `reasoning_content`, vLLM streams `reasoning` — and both are counted, so
+a chat run against either backend is directly comparable.
 
 For benchmarking a *deployment*, these are the right (SLO-relevant) numbers. To
 get clean, comparable results: benchmark from **close to the server**, make sure
@@ -65,8 +65,8 @@ the full sglang install).
 
 ## Architecture
 
-The benchmark engine is **vendored verbatim from sglang** (`bench_serving` +
-its `benchmark/datasets/` layer), with the sglang-runtime couplings cut so it
+The benchmark engine is **vendored verbatim from sglang** (`benchmark/serving.py`
++ its `benchmark/datasets/` layer), with the sglang-runtime couplings cut so it
 installs standalone. The slice is pinned at a SHA in
 `sgl_bench/_vendored/sglang/SOURCES.yaml`; to upgrade, bump it and run
 `python scripts/sync_vendored.py`. Your own datasets live in `sgl_bench/datasets/`

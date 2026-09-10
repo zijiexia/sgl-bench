@@ -1,4 +1,4 @@
-# Vendored from sgl-project/sglang@5a15cde858ea09b77116212a39356f2fc51b8584
+# Vendored from sgl-project/sglang@0bcd822377da7b5718e674eaf9c870d349424dd1
 # Source: python/sglang/benchmark/utils.py
 # DO NOT EDIT directly. To upgrade, edit SOURCES.yaml and rerun
 # `python scripts/sync_vendored.py`.
@@ -53,11 +53,10 @@ def get_tokenizer(
         pretrained_model_name_or_path is not None
         and pretrained_model_name_or_path != ""
     )
-    if pretrained_model_name_or_path.endswith(
-        ".json"
-    ) or pretrained_model_name_or_path.endswith(".model"):
+    if pretrained_model_name_or_path.endswith((".json", ".model", ".gguf")):
         raise ValueError(
-            "sgl-bench (client mode) needs a HF model id/dir, not a .json/.model file"
+            "sgl-bench (client mode) needs a HF model id/dir, not a "
+            ".json/.model/.gguf file"
         )
 
     if pretrained_model_name_or_path is not None and not os.path.exists(
@@ -86,16 +85,13 @@ def get_processor(
         pretrained_model_name_or_path is not None
         and pretrained_model_name_or_path != ""
     )
-    if pretrained_model_name_or_path.endswith(
-        ".json"
-    ) or pretrained_model_name_or_path.endswith(".model"):
+
+    if pretrained_model_name_or_path.endswith((".json", ".model")):
         raise ValueError(
             "sgl-bench (client mode) needs a HF model id/dir, not a .json/.model file"
         )
 
-    if pretrained_model_name_or_path is not None and not os.path.exists(
-        pretrained_model_name_or_path
-    ):
+    if not os.path.exists(pretrained_model_name_or_path):
         pretrained_model_name_or_path = get_model(pretrained_model_name_or_path)
     try:
         return AutoProcessor.from_pretrained(
