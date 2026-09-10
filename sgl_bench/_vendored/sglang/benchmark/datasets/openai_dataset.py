@@ -1,4 +1,4 @@
-# Vendored from sgl-project/sglang@5a15cde858ea09b77116212a39356f2fc51b8584
+# Vendored from sgl-project/sglang@0bcd822377da7b5718e674eaf9c870d349424dd1
 # Source: python/sglang/benchmark/datasets/openai_dataset.py
 # DO NOT EDIT directly. To upgrade, edit SOURCES.yaml and rerun
 # `python scripts/sync_vendored.py`.
@@ -102,7 +102,7 @@ def sample_openai_requests(
             tools_tokens = len(tokenizer.encode(tools_str))
             prompt_len += tools_tokens
 
-        # Pass messages list directly - bench_serving handles List[Dict] prompts
+        # Pass messages list directly - the serving benchmark handles List[Dict] prompts
         filtered_dataset.append(
             DatasetRow(
                 prompt=messages,

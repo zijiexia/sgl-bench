@@ -1,10 +1,13 @@
-"""Streaming reasoning deltas must be timed like content.
+"""Reasoning deltas must be counted as output text, streaming or not.
 
 Backends disagree on the key: sglang streams thoughts as ``reasoning_content``,
-vLLM as ``reasoning``. If the client only knows one of them, the other backend's
-whole thinking phase looks like a run of empty deltas -- TTFT slips to the first
-*content* token (or stays 0 for a pure-thinking answer) and every thinking step's
-ITL sample is lost. Regression test for that mis-timing.
+vLLM as ``reasoning``. A client that knows only one of them mis-times the other
+backend entirely -- the whole thinking phase reads as empty deltas, so TTFT slips
+to the first *content* token (or stays 0 for a pure-thinking answer) and every
+thinking step's ITL sample is lost.
+
+Upstream owns this behaviour as of v0.5.19 (``_combine_openai_chat_content``);
+these tests pin it so a future ``sync_vendored`` bump cannot quietly drop it.
 """
 
 import asyncio
@@ -51,6 +54,40 @@ async def _stream(deltas):
     try:
         await web.TCPSite(runner, "127.0.0.1", 0).start()
         host, port = runner.addresses[0][:2]
+        req = bench_serving.RequestFuncInput(
+            prompt="hi",
+            api_url=f"http://{host}:{port}/v1/chat/completions",
+            prompt_len=1,
+            output_len=8,
+            model="m",
+            lora_name="",
+            image_data=None,
+            extra_request_body={},
+        )
+        return await bench_serving.async_request_openai_chat_completions(req)
+    finally:
+        await runner.cleanup()
+
+
+async def _json_response(message):
+    """Drive the same request func against a non-streaming JSON reply."""
+
+    async def handler(request):
+        return web.json_response(
+            {
+                "choices": [{"index": 0, "message": message}],
+                "usage": {"completion_tokens": 7},
+            }
+        )
+
+    app = web.Application()
+    app.router.add_post("/v1/chat/completions", handler)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    try:
+        await web.TCPSite(runner, "127.0.0.1", 0).start()
+        host, port = runner.addresses[0][:2]
+        bench_serving.args.disable_stream = True
         req = bench_serving.RequestFuncInput(
             prompt="hi",
             api_url=f"http://{host}:{port}/v1/chat/completions",
@@ -122,3 +159,13 @@ def test_both_keys_are_not_double_counted():
 
     assert out.success, out.error
     assert out.generated_text == "thinkx"
+
+
+def test_non_streaming_keeps_the_thoughts():
+    """`--disable-stream` must not throw the thinking text away either."""
+    out = asyncio.run(_json_response({"reasoning": "think", "content": "answer"}))
+
+    assert out.success, out.error
+    assert out.generated_text == "thinkanswer"
+    # Non-streaming has no first-token signal: TTFT is defined as the latency.
+    assert out.ttft == out.latency

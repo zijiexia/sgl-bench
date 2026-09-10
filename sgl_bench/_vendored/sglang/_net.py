@@ -1,10 +1,10 @@
 # Hand-curated minimal slice of sgl-project/sglang
-# python/sglang/srt/utils/network.py @ e5b8e3a66aa6052d86905869a7dd7c816c8401f7
+# python/sglang/srt/utils/network.py @ 0bcd822377da7b5718e674eaf9c870d349424dd1
 #
-# Only NetworkAddress (+ the _wrap/_is_ipv6 helpers it needs for to_url) is
-# vendored: bench_serving uses NetworkAddress(host, port).to_url() and nothing
-# else. The upstream module top-imports zmq + psutil, which we deliberately do
-# not pull in -- hence this is a manual slice, NOT auto-synced by
+# Only NetworkAddress (+ the _wrap/_is_ipv6 helpers it needs) and the two
+# resolve_* wrappers are vendored -- that is everything bench_serving imports.
+# The upstream module top-imports zmq + psutil, which we deliberately do not
+# pull in -- hence this is a manual slice, NOT auto-synced by
 # scripts/sync_vendored.py. Re-verify by hand when bumping the pinned SHA.
 
 from __future__ import annotations
@@ -61,3 +61,20 @@ class NetworkAddress:
     def to_bind_tuple(self) -> tuple[str, int]:
         """Raw ``(host, port)`` tuple for ``socket.bind()`` / ``socket.connect()``."""
         return (self.host, self.port)
+
+
+def resolve_base_url(base_url: str, host: str, port: int) -> str:
+    """Base URL a client sends to: ``base_url`` if set, else ``http://host:port``
+    (IPv6-correct via :class:`NetworkAddress`)."""
+    if base_url:
+        return base_url
+    return NetworkAddress(host, port).to_url()
+
+
+def resolve_host_port(base_url: str, host: str, port: int) -> str:
+    """Like :func:`resolve_base_url` but returns the scheme-less ``host:port``
+    form (for gRPC-style endpoints): ``base_url`` if set, else ``host:port``
+    (IPv6-correct via :class:`NetworkAddress`)."""
+    if base_url:
+        return base_url
+    return NetworkAddress(host, port).to_host_port_str()

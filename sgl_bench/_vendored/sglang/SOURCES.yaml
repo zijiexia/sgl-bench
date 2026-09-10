@@ -3,14 +3,21 @@
 # `python scripts/sync_vendored.py` to refresh. Banner comments at the top
 # of each generated file point back here.
 #
-# Pinned to the v0.5.12.post1 release commit (matches the sglang version
-# commonly deployed). Bump `synced_from_sha` + rerun sync to track upstream;
-# if a rewrite `old` no longer matches, upstream moved a seam -- fix it.
+# Pinned to the v0.5.19 release commit. Bump `synced_from_sha` + rerun sync to
+# track upstream; if a rewrite `old` no longer matches, upstream moved a seam --
+# fix it.
+#
+# NOTE on paths: at v0.5.19 upstream moved the benchmark entrypoints into the
+# `sglang.benchmark` package (`bench_serving.py` -> `benchmark/serving.py`,
+# `test/bench_one_batch_server_internal.py` -> `benchmark/one_batch_server.py`;
+# the old `sglang/bench_serving.py` is now a deprecation shim). Our `dst` names
+# are deliberately unchanged so `sgl_bench/transport/` keeps importing the same
+# modules -- the `src` field below is the authority on provenance.
 
 upstream_repo: sgl-project/sglang
 upstream_branch: main
-synced_from_sha: 5a15cde858ea09b77116212a39356f2fc51b8584   # tag v0.5.12.post1
-synced_at: "2026-06-03"
+synced_from_sha: 0bcd822377da7b5718e674eaf9c870d349424dd1   # tag v0.5.19
+synced_at: "2026-09-09"
 
 # Audited by tests/test_vendor_audit.py: any surviving `from sglang...` /
 # `import sglang...` under _vendored/ fails. The legitimate re-pointed
@@ -25,6 +32,7 @@ pinned_deps:
   aiohttp: ""
   requests: ""
   numpy: ""
+  orjson: ""
   transformers: ""
   tqdm: ""
 
@@ -35,50 +43,36 @@ import_rewrites:
   "from sglang.benchmark.": "from sgl_bench._vendored.sglang.benchmark."
 
 # NOTE: sgl_bench/_vendored/sglang/_net.py is a hand-curated slice of
-# srt/utils/network.py (NetworkAddress + _wrap/_is_ipv6 only) -- it is NOT
-# auto-synced because network.py's module top imports zmq + psutil, which
-# we don't want. Re-verify it by hand on each SHA bump.
+# srt/utils/network.py (NetworkAddress + resolve_base_url/resolve_host_port
+# only) -- it is NOT auto-synced because network.py's module top imports zmq +
+# psutil, which we don't want. Re-verify it by hand on each SHA bump.
 files:
   # --- the online-serving client core ---
-  - src: python/sglang/bench_serving.py
+  - src: python/sglang/benchmark/serving.py
     dst: bench_serving.py
     replacements:
-      # NetworkAddress: re-point to the hand-vendored minimal slice.
-      - old: "from sglang.srt.utils.network import NetworkAddress"
-        new: "from sgl_bench._vendored.sglang._net import NetworkAddress"
+      # Network helpers: re-point to the hand-vendored minimal slice.
+      - old: "from sglang.srt.utils.network import resolve_base_url, resolve_host_port"
+        new: "from sgl_bench._vendored.sglang._net import resolve_base_url, resolve_host_port"
       # FAKE_BOOTSTRAP_HOST: inline the constant (srt/disaggregation/utils.py).
       - old: "from sglang.srt.disaggregation.utils import FAKE_BOOTSTRAP_HOST"
-        new: 'FAKE_BOOTSTRAP_HOST = "2.2.2.2"'
+        new: "FAKE_BOOTSTRAP_HOST = \"2.2.2.2\""
       # Re-point dataset dispatch to the SE-owned overlay registry (user
       # datasets overlay the vendored base). DatasetRow stays from common.
       # Self-checking: if upstream changes this line, the rewrite no-ops and
       # the audit fails on the surviving `from sglang.benchmark` import.
       - old: "from sglang.benchmark.datasets import DatasetRow, get_dataset"
         new: "from sgl_bench._vendored.sglang.benchmark.datasets.common import DatasetRow\nfrom sgl_bench.registry import get_dataset"
-      # Reasoning deltas: upstream only counts sglang's `reasoning_content`,
-      # so a vLLM chat run (which names the field `reasoning`) mis-times the
-      # entire thinking phase. Count either key.
-      - old: "                                # Reasoning models stream thoughts via\n                                # `reasoning_content`; count them like content.\n                                delta = choices[0].get(\"delta\") or {}\n                                content = (delta.get(\"reasoning_content\") or \"\") + (\n                                    delta.get(\"content\") or \"\"\n                                )"
-        new: "                                # Reasoning models stream thoughts under a\n                                # backend-specific key: sglang uses\n                                # `reasoning_content`, vLLM streams `reasoning`.\n                                # Miss one and that backend's whole thinking\n                                # phase looks like empty deltas -- TTFT only\n                                # fires on the first *content* token (or never,\n                                # if the answer is pure thinking) and the ITL\n                                # samples for those steps are lost.\n                                # `or`, not `+`: a server that sends both keys\n                                # must not have its thoughts counted twice.\n                                delta = choices[0].get(\"delta\") or {}\n                                reasoning = (\n                                    delta.get(\"reasoning_content\")\n                                    or delta.get(\"reasoning\")\n                                    or \"\"\n                                )\n                                content = reasoning + (delta.get(\"content\") or \"\")"
-      # --flush-cache: the reset endpoint is backend-specific (sglang
-      # /flush_cache vs vllm /reset_prefix_cache). Route through the SE-owned
-      # sgl_bench.cache helper, which also warns instead of silently leaving a
-      # warm cache behind. (one_batch_client already branches upstream.)
-      - old: "    if (\"sglang\" in backend and _get_bool_env_var(\"SGLANG_IS_IN_CI\")) or flush_cache:\n        requests.post(base_url + \"/flush_cache\", headers=get_auth_headers())"
-        new: "    if (\"sglang\" in backend and _get_bool_env_var(\"SGLANG_IS_IN_CI\")) or flush_cache:\n        from sgl_bench.cache import flush_cache as _flush_backend_cache\n\n        _flush_backend_cache(base_url, backend, headers=get_auth_headers())"
-      - old: "        help=\"Flush the cache before running the benchmark\","
-        new: "        help=\"Flush the prefix cache before the benchmark. Endpoint depends on \"\n        \"--backend: /flush_cache for sglang, /reset_prefix_cache for vllm \"\n        \"(needs VLLM_SERVER_DEV_MODE=1 on the server).\","
       # Let user-registered datasets add their own CLI flags right before parse.
-      # (v0.5.12.post1 has no _validate_parsed_gsp_args between parse and run.)
-      - old: "    args = parser.parse_args()\n    run_benchmark(args)"
-        new: "    from sgl_bench.registry import add_user_dataset_args\n    add_user_dataset_args(parser)\n    args = parser.parse_args()\n    run_benchmark(args)"
+      - old: "    args = parser.parse_args()\n    _validate_parsed_gsp_args(parser, args)"
+        new: "    from sgl_bench.registry import add_user_dataset_args\n\n    add_user_dataset_args(parser)\n    args = parser.parse_args()\n    _validate_parsed_gsp_args(parser, args)"
 
   # --- single-batch latency client core (client-mode "one-batch") ---
   # We keep only the client primitives (run_one_case + helpers) and drop the
-  # four server-launch / CI / orchestrator functions, which embed the engine
+  # launch / CI / orchestrator functions, which embed the engine
   # (ServerArgs/launch_server) and GitHub-CI reporting. sgl_bench/transport/
   # latency.py owns the (client-only) sweep loop instead.
-  - src: python/sglang/test/bench_one_batch_server_internal.py
+  - src: python/sglang/benchmark/one_batch_server.py
     dst: one_batch_client.py
     replacements:
       # Dataset dispatch -> overlay registry (user datasets work in latency too).
@@ -86,18 +80,31 @@ files:
         new: "from sgl_bench.registry import get_dataset"
       # Inline the bootstrap-host constant (used by run_one_case fake_prefill).
       - old: "from sglang.srt.disaggregation.utils import FAKE_BOOTSTRAP_HOST"
-        new: 'FAKE_BOOTSTRAP_HOST = "2.2.2.2"'
+        new: "FAKE_BOOTSTRAP_HOST = \"2.2.2.2\""
       # Profiling needs the in-process engine -> stub that errors in client mode.
       - old: "from sglang.profiler import run_profile"
         new: "def run_profile(*args, **kwargs):\n    raise RuntimeError(\n        \"profiling needs the in-process engine; unavailable in sgl-bench client mode\"\n    )"
+      # acquire_endpoint owns the launch-vs-connect decision and top-imports
+      # ServerArgs/launch_server. It is only reachable from the dropped
+      # run_benchmark_internal, so cut the import outright (a `drop_imports`
+      # prefix would not match: import_rewrites re-point it first).
+      - old: "from sglang.benchmark.endpoint import acquire_endpoint\n"
+        new: ""
+      # --apply-chat-template: upstream calls into srt's chat_encoding, which
+      # pulls the dsv4/dsv32/inkling encoder subtree (and the engine) with it.
+      # Fall back to the HF chat template -- literally upstream's own spec=None
+      # branch in encode_simple_chat.
+      - old: "    from sglang.srt.entrypoints.openai.chat_encoding import (\n        encode_simple_chat,\n        resolve_chat_encoding_spec,\n    )\n\n    hf_config = _load_hf_config(getattr(tok_inner, \"name_or_path\", \"\") or \"\")\n    spec = (\n        resolve_chat_encoding_spec(hf_config=hf_config, tokenizer=tok_inner)\n        if hf_config is not None\n        else None\n    )\n    return encode_simple_chat(\n        tokenizer=tok_inner,\n        spec=spec,\n        messages=[{\"role\": \"user\", \"content\": prompt_text}],\n    )"
+        new: "    # Upstream resolves a model-specific chat encoder (dsv4/dsv32/inkling) that\n    # lives under srt and drags in the engine. Client mode keeps upstream's own\n    # no-spec fallback verbatim -- the HF chat template.\n    if getattr(tok_inner, \"chat_template\", None) is None:\n        raise ValueError(\n            \"This model has no HF chat template, so --apply-chat-template cannot \"\n            f\"encode for {getattr(tok_inner, 'name_or_path', tok_inner)!r}; \"\n            \"sglang's model-specific encoders need the full sglang install.\"\n        )\n    return tok_inner.apply_chat_template(\n        [{\"role\": \"user\", \"content\": prompt_text}],\n        add_generation_prompt=True,\n        tokenize=True,\n    )"
     drop_functions:
-      - launch_server_internal      # embeds the engine
-      - launch_server_process       # embeds the engine
       - get_report_summary          # hints ServerArgs + is_blackwell + GitHub CI
       - run_benchmark_internal      # launch/teardown/CI orchestrator (we own this)
+      - run_benchmark               # ServerArgs + nightly-CI result upload
+      - cli_main                    # ServerArgs.add_cli_args entrypoint
+      - _load_hf_config             # only fed the dropped srt chat-encoder spec
     drop_imports:
-      - sglang.srt                  # ServerArgs, launch_server, is_blackwell, kill_process_tree
-      - sglang.test                 # is_in_ci, write_github_step_summary (CI only)
+      - sglang.srt                  # ServerArgs, launch_server, is_blackwell, resolving_view
+      - sglang.test                 # nightly_bench_utils, is_in_ci, write_github_step_summary
 
   # --- benchmark package + tokenizer/dataset utilities ---
   - src: python/sglang/benchmark/__init__.py
@@ -105,13 +112,16 @@ files:
   - src: python/sglang/benchmark/utils.py
     dst: benchmark/utils.py
     replacements:
-      # Drop the nested srt tokenizer/processor branches (.json/.model files):
-      # replace each if-body with an explicit raise so the only remaining
-      # path falls through to transformers.AutoTokenizer/AutoProcessor.
+      # Drop the srt tokenizer branch (.json/.model/.gguf files): replace the
+      # if-body with an explicit raise so the only remaining path falls through
+      # to transformers.AutoTokenizer.
       - old: "        from sglang.srt.utils.hf_transformers_utils import get_tokenizer\n\n        return get_tokenizer(pretrained_model_name_or_path)"
-        new: "        raise ValueError(\n            \"sgl-bench (client mode) needs a HF model id/dir, not a .json/.model file\"\n        )"
-      - old: "        from sglang.srt.utils.hf_transformers_utils import get_processor\n\n        return get_processor(pretrained_model_name_or_path)"
-        new: "        raise ValueError(\n            \"sgl-bench (client mode) needs a HF model id/dir, not a .json/.model file\"\n        )"
+        new: "        raise ValueError(\n            \"sgl-bench (client mode) needs a HF model id/dir, not a \"\n            \".json/.model/.gguf file\"\n        )"
+      # get_processor has no srt-free path upstream (it always delegates to
+      # hf_transformers_utils). Rebuild it on transformers.AutoProcessor,
+      # keeping upstream's modelscope resolution and reject-a-file-path guard.
+      - old: "    from sglang.srt.utils.hf_transformers_utils import (\n        get_processor as _srt_get_processor,\n    )\n\n    if not pretrained_model_name_or_path.endswith(\n        (\".json\", \".model\")\n    ) and not os.path.exists(pretrained_model_name_or_path):\n        pretrained_model_name_or_path = get_model(pretrained_model_name_or_path)\n    return _srt_get_processor(pretrained_model_name_or_path, trust_remote_code=True)"
+        new: "    if pretrained_model_name_or_path.endswith((\".json\", \".model\")):\n        raise ValueError(\n            \"sgl-bench (client mode) needs a HF model id/dir, not a .json/.model file\"\n        )\n\n    if not os.path.exists(pretrained_model_name_or_path):\n        pretrained_model_name_or_path = get_model(pretrained_model_name_or_path)\n    try:\n        return AutoProcessor.from_pretrained(\n            pretrained_model_name_or_path, trust_remote_code=True\n        )\n    except Exception:\n        import importlib.util\n\n        if importlib.util.find_spec(\"sglang\") is None:\n            raise\n        importlib.import_module(\"sglang\")  # registers custom model configs\n        return AutoProcessor.from_pretrained(\n            pretrained_model_name_or_path, trust_remote_code=True\n        )"
       # Robust load: custom archs (e.g. deepseek_v4) aren't known to vanilla
       # transformers and fail config parsing; sglang registers them on import.
       # Try vanilla first, then fall back to importing sglang IFF it's already
@@ -119,16 +129,14 @@ files:
       # importlib (not `import sglang`) so the audit stays clean.
       - old: "    return AutoTokenizer.from_pretrained(\n        pretrained_model_name_or_path, trust_remote_code=True\n    )"
         new: "    try:\n        return AutoTokenizer.from_pretrained(\n            pretrained_model_name_or_path, trust_remote_code=True\n        )\n    except Exception:\n        import importlib.util\n\n        if importlib.util.find_spec(\"sglang\") is None:\n            raise\n        importlib.import_module(\"sglang\")  # registers custom model configs\n        return AutoTokenizer.from_pretrained(\n            pretrained_model_name_or_path, trust_remote_code=True\n        )"
-      - old: "    return AutoProcessor.from_pretrained(\n        pretrained_model_name_or_path, trust_remote_code=True\n    )"
-        new: "    try:\n        return AutoProcessor.from_pretrained(\n            pretrained_model_name_or_path, trust_remote_code=True\n        )\n    except Exception:\n        import importlib.util\n\n        if importlib.util.find_spec(\"sglang\") is None:\n            raise\n        importlib.import_module(\"sglang\")  # registers custom model configs\n        return AutoProcessor.from_pretrained(\n            pretrained_model_name_or_path, trust_remote_code=True\n        )"
 
   # --- dataset registry + contract ---
   - src: python/sglang/benchmark/datasets/__init__.py
     dst: benchmark/datasets/__init__.py
     replacements:
-      # M1: exclude the heavy datasets (PIL/pybase64/pandas/HF-datasets) so a
-      # bare install never imports them. Re-added behind extras in M4 with
-      # lazy import. Remove their import lines + DATASET_MAPPING entries.
+      # Exclude the heavy datasets (PIL/pybase64/pandas/HF-datasets) so a bare
+      # install never imports them; the registry lazy-imports them behind
+      # extras. Remove their import lines + DATASET_MAPPING entries.
       - old: "from sglang.benchmark.datasets.image import ImageDataset\n"
         new: ""
       - old: "from sglang.benchmark.datasets.longbench_v2 import LongBenchV2Dataset\n"
@@ -145,8 +153,8 @@ files:
     dst: benchmark/datasets/common.py
 
   # --- light datasets (transformers/numpy/tqdm/huggingface_hub only) ---
-  - src: python/sglang/benchmark/datasets/autobench.py
-    dst: benchmark/datasets/autobench.py
+  - src: python/sglang/benchmark/datasets/agentic_trace.py
+    dst: benchmark/datasets/agentic_trace.py
   - src: python/sglang/benchmark/datasets/custom.py
     dst: benchmark/datasets/custom.py
   - src: python/sglang/benchmark/datasets/generated_shared_prefix.py
@@ -159,7 +167,10 @@ files:
     dst: benchmark/datasets/random.py
   - src: python/sglang/benchmark/datasets/sharegpt.py
     dst: benchmark/datasets/sharegpt.py
-  # NOTE: speed_bench.py does not exist at v0.5.12.post1 (added upstream later).
+  - src: python/sglang/benchmark/datasets/speed_bench.py
+    dst: benchmark/datasets/speed_bench.py
+  # NOTE: autobench.py was renamed to agentic_trace.py upstream between
+  # v0.5.12.post1 and v0.5.19 (dataset name "autobench" -> "agentic-trace").
 
   # --- heavy datasets (gated behind extras; lazy-loaded by the registry, NOT
   # imported by datasets/__init__.py, so a bare install stays light) ---
